@@ -11,7 +11,7 @@
 (define (display-usage)
   (display "Usage: ")
   (display (find-system-path 'run-file))
-  (display " vol-file p-system-path")
+  (display " vol-file")
   (newline))
 
 ; we allow for / and \ style path separators in the container file

@@ -1,14 +1,8 @@
 #lang racket
 
 ; todo: duplicate, touch, write, make sub vol
-
-; the next step := duplicate objects - pass responsibility down to each object to
-; duplicate itself. when that comes to files, they read in their entire contents as
-; is and make a full binary copy of it - then pass back the details of space used. 
-; when it comes to volumes, we rewrite the directory list based on the details
-; received back from each sub object and we pass on the space used by the sub-object.
-
-; need to think about - how to write back volume info and dir (file-info)
+;       debugging tool: serialise volume content so as to allow easy comparison
+;                       between volumes
 
 (provide (contract-out (block-bytes (-> exact-integer? exact-integer?))
                        (make-psys-vol (-> string? 
@@ -17,6 +11,7 @@
          (struct-out fi))
 
 (define block-size 512)
+(define dir-entry-size 26)
 (define volume-header-blocks 2)
 (define text-file-header-blocks 2)
 (define max-vol-blocks 32767)
@@ -30,6 +25,8 @@
 (define (bytes->int16 byte-str offset)
   (+ (bytes-ref byte-str offset) (* (bytes-ref byte-str (+ offset 1)) 256)))
 
+; we convert between racket strings and byte-strings in the knowledge that all
+; strings are ascii only. it's just that racket strings are nicer to work with
 (define (string->bytes s) (list->bytes (map char->integer (string->list s))))
 
 (define (string->pstring s len)
@@ -46,22 +43,21 @@
 (define (block-bytes b) (* b block-size))
 
 ; convert byte count into a block count
-(define (byte-blocks b)
-  (+ (quotient b block-size)
-     (if (zero? (remainder b block-size)) 0 1)))
+(define (byte-blocks b) (quotient (+ b block-size -1) block-size))
 
 (define (time-stamp time-b date-b)
   (make-date 0
-	     (bitwise-bit-field time-b 9 15)
-	     (- (bitwise-bit-field time-b 4 9) 1)
-	     (bitwise-bit-field date-b 4 9)
-	     (bitwise-bit-field date-b 0 4)
-	     (bitwise-bit-field date-b 9 16)
+             (bitwise-bit-field time-b 9 15)
+             (- (bitwise-bit-field time-b 4 9) 1)
+             (bitwise-bit-field date-b 4 9)
+             (bitwise-bit-field date-b 0 4)
+             (bitwise-bit-field date-b 9 16)
              0
              0
              #f
              0))
 
+; this seems silly, is there a (sensible) way I could define a reversible operation?
 (define (file-kind kind-b)
   (case (bitwise-bit-field kind-b 0 4)
     ((0) 'None)
@@ -90,6 +86,7 @@
     ('Svol 9)
     (else 0)))
 
+; file information
 (define-struct fi (first-block
                    last-block
                    file-kind
@@ -99,7 +96,7 @@
 
 (define (fbytes->fi in-port start)
   (file-position in-port start)
-  (let ((byte-str (read-bytes 26 in-port)))
+  (let ((byte-str (read-bytes dir-entry-size in-port)))
     (make-fi (bytes->int16 byte-str 0)
              (bytes->int16 byte-str 2)
              (file-kind (bytes->int16 byte-str 4))
@@ -125,6 +122,7 @@
                       (date-month last-access)
                       (arithmetic-shift (date-year last-access) 9))))))
 
+; volume information
 (define-struct vi (first-block
                    last-block
                    file-kind
@@ -155,8 +153,9 @@
                 (int16->bytes (vi-number-of-files vol-info))
                 (int16->bytes (vi-load-time vol-info))
                 (int16->bytes (vi-last-boot vol-info))
-                (make-bytes 4 0)))
+                (make-bytes (- dir-entry-size 22) 0)))
 
+; really need to look into file locking possibilities...
 (define (register-container-file container-file)
   (if (file-exists? container-file)
       (let ((file-modified (file-or-directory-modify-seconds container-file)))
@@ -189,7 +188,7 @@
                         "File not found: ~a." 
                         container-file)))
 
-(define (file-blocks-used file-info)
+(define (fi-blocks-used file-info)
   (- (fi-last-block file-info) (fi-first-block file-info)))
 
 (define (make-psys-vol container-file)
@@ -201,8 +200,9 @@
 
 (define (make-volume in-port block-offset file-info container-file)
   (let ((vol-info-start (block-bytes (+ block-offset volume-header-blocks))))
-    (define (add-dir-entry n)
-      (let ((file-info (fbytes->fi in-port (+ vol-info-start (* n 26)))))
+    (define (dir-entry n)
+      (let ((file-info (fbytes->fi in-port (+ vol-info-start 
+                                              (* n dir-entry-size)))))
         (if (eq? (fi-file-kind file-info) 'Svol)
             (make-volume in-port 
                          (+ block-offset (fi-first-block file-info))
@@ -210,7 +210,7 @@
 			 container-file)
             (make-file in-port block-offset file-info container-file))))
     (let* ((vol-info (fbytes->vi in-port vol-info-start))
-           (dir (map add-dir-entry (range 1 (+ (vi-number-of-files vol-info) 1)))))
+           (dir (map dir-entry (range 1 (+ (vi-number-of-files vol-info) 1)))))
       (lambda (op . arg)
         (cond ((eq? op 'list)
                (list (make-fi
@@ -221,7 +221,7 @@
                       block-size
                       (fi-last-access file-info))
                      (map (lambda (f) (f 'list)) dir)))
-              ((eq? op 'outer-used) (file-blocks-used file-info))
+              ((eq? op 'outer-used) (fi-blocks-used file-info))
               ((eq? op 'inner-used)
                (foldl + (vi-last-block vol-info) (map (lambda (f) (f op)) dir)))
               ((eq? op 'outer-free)
@@ -251,7 +251,8 @@
                      vol-image
                     (values vol-image
                             (make-fi (fi-first-block file-info)
-                                     (byte-blocks (bytes-length vol-image))
+                                     (+ (byte-blocks (bytes-length vol-image))
+					(fi-first-block file-info))
                                      (fi-file-kind file-info)
                                      (fi-file-name file-info)
                                      (fi-last-byte file-info)
@@ -281,20 +282,18 @@
                                           (vi-last-boot vol-info)))
                       dir-bytes
                       (make-bytes (max (- (block-bytes (vi-last-block vol-info))
+					  (block-bytes volume-header-blocks)
                                           (bytes-length dir-bytes)
-                                          26) ; fixme: magic number
+                                          dir-entry-size)
                                        0)
                                   0)
                       vol-bytes
-                      (make-bytes (max (- (block-bytes (vi-eov-block vol-info))
-                                          (bytes-length vol-bytes)
-                                          (block-bytes (vi-last-block vol-info)))
-                                       0)
+                      (make-bytes (- (block-bytes new-eov-block)
+                                     (bytes-length vol-bytes)
+                                     (block-bytes (vi-last-block vol-info)))
                                   0)))
       (let-values (((this-image this-fi) ((car dir) 'bin-image)))
-        (let ((new-block-offset (+ block-offset
-                                   (- (fi-last-block this-fi)
-                                      (fi-first-block this-fi)))))
+        (let ((new-block-offset (+ block-offset (fi-blocks-used this-fi))))
           (vol-iter (cdr dir)
                     new-block-offset
                     (bytes-append dir-bytes
@@ -311,18 +310,17 @@
 (define (make-file in-port block-offset file-info container-file)
   (lambda (op . arg)
     (cond ((eq? op 'list)
-           (list (make-fi
-                  (+ (fi-first-block file-info) block-offset)
-                  (+ (fi-last-block file-info) block-offset)
-                  (fi-file-kind file-info)
-                  (fi-file-name file-info)
-                  (fi-last-byte file-info)
-                  (fi-last-access file-info))
+           (list (make-fi (+ (fi-first-block file-info) block-offset)
+                          (+ (fi-last-block file-info) block-offset)
+                          (fi-file-kind file-info)
+                          (fi-file-name file-info)
+                          (fi-last-byte file-info)
+                          (fi-last-access file-info))
                  '()))
-          ; the two used forms are meaningless for files, we just provide a
-          ; consistant interface for volume and file objects
-          ((eq? op 'outer-used) (file-blocks-used file-info))
-          ((eq? op 'inner-used) (file-blocks-used file-info))
+          ; the two type of used forms are meaningless for files, we just
+          ; provide a consistant interface for volume and file objects
+          ((eq? op 'outer-used) (fi-blocks-used file-info))
+          ((eq? op 'inner-used) (fi-blocks-used file-info))
           ((eq? op 'outer-free) #f)
           ((eq? op 'inner-free) #f)
           ((eq? op 'bin-image)
@@ -348,8 +346,7 @@
 (define (file->bytes in-port block-offset file-info)
   (file-position in-port (block-bytes (+ block-offset
                                          (fi-first-block file-info))))
-  (read-bytes (block-bytes (- (fi-last-block file-info)
-                              (fi-first-block file-info)))
+  (read-bytes (block-bytes (fi-blocks-used file-info))
               in-port))
              
 (define (file->text in-port block-offset file-info)
@@ -357,18 +354,12 @@
   (file-position in-port (block-bytes (+ block-offset
 					 (fi-first-block file-info)
 					 text-file-header-blocks)))
-  (let* ((file-length (+ (block-bytes (- (fi-last-block file-info)
-					 (fi-first-block file-info)
+  (let* ((file-length (+ (block-bytes (- (fi-blocks-used file-info)
 					 text-file-header-blocks
 					 1))
 			 (fi-last-byte file-info)))
 	 (file-bytes (read-bytes file-length in-port)))
-    ; maybe best off replacing nulls from the get go, then deal with each
-    ; line one cr at a time (ie do the indents, then append the rest up to
-    ; the next cr
-    ; would it be better to convert to list?
     (let convert-bytes ((pos 0) (start-of-line #t) (text #""))
-      ;(display text)
       (if (= pos file-length)
           text
           (let ((pos-byte (bytes-ref file-bytes pos)))
@@ -382,8 +373,13 @@
                    (convert-bytes (+ pos 2)
                                   #f
                                   (bytes-append text 
-                                                (dle-indent (bytes-ref file-bytes (+ pos 1))))))
-                  (else (convert-bytes (+ pos 1) #f (bytes-append text (bytes pos-byte))))))))))
+                                                (dle-indent
+                                                  (bytes-ref file-bytes
+                                                             (+ pos 1))))))
+                  (else (convert-bytes (+ pos 1)
+                                       #f
+                                       (bytes-append text
+                                                     (bytes pos-byte))))))))))
  
     
 ; we use current-input-port & eof-object? eventually...
@@ -419,7 +415,8 @@
                                 (bytes-append file-text (bytes cr))))
                 (else (convert-bytes (+ pos 1)
                                      #f
-                                     (bytes-append file-text (bytes pos-byte)))))))))
+                                     (bytes-append file-text
+                                                   (bytes pos-byte)))))))))
 
 
 
