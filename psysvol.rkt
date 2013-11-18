@@ -45,6 +45,11 @@
 ; convert block count into a byte count
 (define (block-bytes b) (* b block-size))
 
+; convert byte count into a block count
+(define (byte-blocks b)
+  (+ (quotient b block-size)
+     (if (zero? (remainder b block-size)) 0 1)))
+
 (define (time-stamp time-b date-b)
   (make-date 0
 	     (bitwise-bit-field time-b 9 15)
@@ -107,16 +112,18 @@
   (let ((last-access (fi-last-access file-info)))
     (bytes-append (int16->bytes (fi-first-block file-info))
                   (int16->bytes (fi-last-block file-info))
-                  (bitwise-ior 
-                    (file-kind->byte (fi-file-kind file-info))
-                    (arithmetic-shift (date-minute last-access) 9)
-                    (arithmetic-shift (+ (date-hour last-access) 1) 4))
-                  (string->pstring (fi-file-name) 16)
+                  (int16->bytes
+                    (bitwise-ior 
+                      (file-kind->byte (fi-file-kind file-info))
+                      (arithmetic-shift (date-minute last-access) 9)
+                      (arithmetic-shift (+ (date-hour last-access) 1) 4)))
+                  (string->pstring (fi-file-name file-info) 16)
                   (int16->bytes (fi-last-byte file-info))
-                  (bitwise-ior
-                    (arithmetic-shift (date-day last-access) 4)
-                    (date-month last-access)
-                    (arithmetic-shift (date-year last-access) 9)))))
+                  (int16->bytes
+                    (bitwise-ior
+                      (arithmetic-shift (date-day last-access) 4)
+                      (date-month last-access)
+                      (arithmetic-shift (date-year last-access) 9))))))
 
 (define-struct vi (first-block
                    last-block
@@ -147,7 +154,8 @@
                 (int16->bytes (vi-eov-block vol-info))
                 (int16->bytes (vi-number-of-files vol-info))
                 (int16->bytes (vi-load-time vol-info))
-                (int16->bytes (vi-last-boot vol-info))))
+                (int16->bytes (vi-last-boot vol-info))
+                (make-bytes 4 0)))
 
 (define (register-container-file container-file)
   (if (file-exists? container-file)
@@ -167,10 +175,10 @@
                         (open-input-file container-file #:mode 'binary))
                        ((eq? op 'file-info)
                         (make-fi 0
-                                 (quotient (file-size container-file)
-                                           block-size)
+                                 (byte-blocks (file-size container-file))
                                  'Vol
                                  container-file
+                                 ; fixme: a result of 0 really means 512
                                  (remainder (file-size container-file)
                                             block-size)
                                  (seconds->date file-modified)))
@@ -235,10 +243,19 @@
                        (ormap (lambda (f) (apply f op (cdr arg))) dir))
                    #f))
               ((eq? op 'bin-image)
-               ; ok, to implement this, we need to make a binary image that
-               ; includes the volume directory and then all the file images 
-               ; ...
-               #f)
+               ; in the final version, we will be able to do a straight
+               ; forward copy of the entire volume image, but for now, 
+               ; this is proof of concept...
+               (let ((vol-image (vol->bytes vol-info dir)))
+                 (if (eq? (fi-file-kind file-info) 'Vol)
+                     vol-image
+                    (values vol-image
+                            (make-fi (fi-first-block file-info)
+                                     (byte-blocks (bytes-length vol-image))
+                                     (fi-file-kind file-info)
+                                     (fi-file-name file-info)
+                                     (fi-last-byte file-info)
+                                     (fi-last-access file-info))))))
               ((eq? op 'read)
                (if (and (> (length arg) 1) (string=? (car arg) (vi-volume-name vol-info)))
                    ; using ormap we get the converted text or #f
@@ -246,19 +263,51 @@
                    #f))
               (else (raise-user-error 'volume-obj "Unknown operation: ~a." op)))))))
 
-(define (vol->bytes dir)
-  (define (vol-iter dir file-infos bin-images block-ptr)
-    (if (null? dir)
-        (values file-infos bin-images)
-        (let ((this-image ((car dir) 'bin-image))
-          (vol-iter (cdr dr)
-                    (bytes-append file-infos
-                                  (fi->bytes (make-fi block-ptr
-                                                      (+ (quotient (bytes-length this-image)
-                                                                   block-size)
-                                                         1
-                                                         block-ptr)
                                                     
+(define (vol->bytes vol-info dir)
+  (define (vol-iter dir block-offset dir-bytes vol-bytes)
+    (if (null? dir)
+      (let ((new-eov-block (max (vi-eov-block vol-info)
+                                (+ (vi-last-block vol-info)
+                                   (byte-blocks (bytes-length vol-bytes))))))
+        (bytes-append (make-bytes (block-bytes volume-header-blocks) 0)
+                      (vi->bytes (make-vi (vi-first-block vol-info)
+                                          (vi-last-block vol-info)
+                                          (vi-file-kind vol-info)
+                                          (vi-volume-name vol-info)
+                                          new-eov-block
+                                          (vi-number-of-files vol-info)
+                                          (vi-load-time vol-info)
+                                          (vi-last-boot vol-info)))
+                      dir-bytes
+                      (make-bytes (max (- (block-bytes (vi-last-block vol-info))
+                                          (bytes-length dir-bytes)
+                                          26) ; fixme: magic number
+                                       0)
+                                  0)
+                      vol-bytes
+                      (make-bytes (max (- (block-bytes (vi-eov-block vol-info))
+                                          (bytes-length vol-bytes)
+                                          (block-bytes (vi-last-block vol-info)))
+                                       0)
+                                  0)))
+      (let-values (((this-image this-fi) ((car dir) 'bin-image)))
+        (let ((new-block-offset (+ block-offset
+                                   (- (fi-last-block this-fi)
+                                      (fi-first-block this-fi)))))
+          (vol-iter (cdr dir)
+                    new-block-offset
+                    (bytes-append dir-bytes
+                                  (fi->bytes
+                                    (make-fi block-offset
+                                             new-block-offset
+                                             (fi-file-kind this-fi)
+                                             (fi-file-name this-fi)
+                                             (fi-last-byte this-fi)
+                                             (fi-last-access this-fi))))
+                    (bytes-append vol-bytes this-image))))))
+  (vol-iter dir (vi-last-block vol-info) #"" #""))
+ 
 (define (make-file in-port block-offset file-info container-file)
   (lambda (op . arg)
     (cond ((eq? op 'list)
@@ -279,7 +328,9 @@
           ((eq? op 'bin-image)
            (let ((in-port (container-file 'open-input)))
              (begin0
-               (file->bytes in-port block-offset file-info)
+               (values
+                 (file->bytes in-port block-offset file-info)
+                 file-info)
                (close-input-port in-port))))
           ((eq? op 'read)
            (if (and (= (length arg) 1)
