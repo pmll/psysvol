@@ -13,12 +13,6 @@
   (display " [-s] vol-file [p-system-sub-volume]")
   (newline))
 
-; we've used this twice now, needs to go into common file somewhere
-; we allow for / and \ style path separators in the container file
-(define (vol-name path-name) 
-  (caar (map (lambda (s) (string-split s ".VOL")) 
-             (regexp-match "[^/\\\\]*$" (string-upcase path-name)))))
-
 (define (extract-params)
   (define (set-mode params)
     (cond ((null? params) (values #f #f #f))
@@ -39,7 +33,7 @@
           (let* ((psys-vol (make-psys-vol vol-file))
                  (free (apply psys-vol 
                               mode
-                              (vol-name vol-file)
+                              (psys-vol 'vol-name)
                               (string-split (string-upcase svol) "/"))))
             (if free
                 (printf "~a blocks free (i.e. ~a bytes)\n"

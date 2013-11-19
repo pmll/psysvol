@@ -12,11 +12,6 @@
   (display " vol-file p-system-path")
   (newline))
 
-; we allow for / and \ style path separators in the container file
-(define (vol-name path-name) 
-  (caar (map (lambda (s) (string-split s ".VOL")) 
-             (regexp-match "[^/\\\\]*$" (string-upcase path-name)))))
-
 (if (= 2 (length params))
     (let ((vol-file  (car params))
           (text-file (cadr params)))
@@ -24,7 +19,7 @@
           (let* ((psys-vol (make-psys-vol vol-file))
                  (text (apply psys-vol 
                               'read
-                              (vol-name vol-file)
+                              (psys-vol 'vol-name)
                               (string-split (string-upcase text-file) "/"))))
             (if text
                 (display text)
