@@ -1,8 +1,9 @@
 #lang racket
 
-; write text from standard in to p-system image
+; write text from standard input to p-system image
 
 (require "psysvol.rkt")
+(require "ripple.rkt")
 
 (define read-block-size 1024)
 
@@ -30,12 +31,16 @@
                               (psys-vol 'vol-name)
                               (string-split (string-upcase text-file) "/"))))
             (if can-write?
-                (printf "~a"
-                        (apply psys-vol
-                               'write
-                               (psys-vol 'vol-name)
-                               (append (string-split (string-upcase text-file) "/")
-                                       (list (input-bytes)))))
+                (let ((byte-str (apply psys-vol
+                                       'write
+                                       (psys-vol 'vol-name)
+                                       (append (string-split (string-upcase text-file)
+                                                             "/")
+                                               (list (input-bytes))))))
+                  (ripple vol-file)
+                  (let ((out (open-output-file vol-file)))
+                    (write-bytes byte-str out)
+                    (close-output-port out)))
                 (printf "Can't write to ~a" text-file)))
           (printf "Container File: ~a not found." vol-file)))
     (display-usage))
