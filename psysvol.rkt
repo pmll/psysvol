@@ -6,6 +6,15 @@
 
 ; fixme: need to check for vol expanding beyond max-vol-blocks
 
+; points of corruption/non psys checking:
+;        fi date/time parts out of range (eg month 13)
+;        pstring length byte zero or greater than space set aside
+;        fi block start/end beyond containing vol eov
+;        fi last byte zero or beyond 512
+;        vi number of files goes beyond vi last-block
+;        vi first block - should be zero
+;        no two file objects should overlap
+
 (require racket/date)
 
 (provide (contract-out (block-bytes (-> exact-integer? exact-integer?))
@@ -369,9 +378,9 @@
                 (eq? (fi-file-kind file-info) 'Text)))
           ((eq? op 'write)
            (if (string=? (car arg) (fi-file-name file-info))
-               ; this is the file we are overwriting
-               (let ((new-image (bytes-append (make-bytes (block-bytes text-file-header-blocks) 0)
-                                               (text->file (cadr arg)))))
+             ; this is the file we are meant to be overwriting
+             (if (eq? (fi-file-kind file-info) 'Text)
+               (let ((new-image (text->file (cadr arg))))
                  (values (bytes-append new-image
                                        (make-bytes (- block-size
                                                       (bytes-last-block (bytes-length new-image)))
@@ -383,13 +392,15 @@
                                   (fi-file-name file-info)
                                   (bytes-last-block (bytes-length new-image))
                                   (current-date))))
-               ; it's not this file, just produce a bin-image of it
-               (let ((in-port (container-file 'open-input)))
-                 (begin0
-                   (values
-                     (file->bytes in-port block-offset file-info)
-                     file-info)
-                   (close-input-port in-port)))))
+               (raise-user-error "Unable to write to file kind ~a."
+                                 (fi-file-kind file-info)))
+             ; it's not this file, just produce a bin-image of it
+             (let ((in-port (container-file 'open-input)))
+               (begin0
+                 (values
+                   (file->bytes in-port block-offset file-info)
+                   file-info)
+                 (close-input-port in-port)))))
           ((eq? op 'read)
            (if (and (= (length arg) 1)
                     (string=? (car arg) (fi-file-name file-info)))
@@ -455,7 +466,9 @@
          (= (bytes-ref byte-str (+ pos 1)) lf)))
   (let convert-bytes ((pos 0) (start-of-line #t) (file-text #""))
     (if (= pos (bytes-length byte-str))
-        (bytes-append file-text (bytes 0))
+        (bytes-append (make-bytes (block-bytes text-file-header-blocks) 0)
+                      file-text 
+                      (bytes 0))
         (let ((pos-byte (bytes-ref byte-str pos)))
           (cond (start-of-line
                  (let ((indent (min (number-of-spaces pos) 223)))

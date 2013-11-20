@@ -10,10 +10,7 @@
 (define params (vector->list (current-command-line-arguments)))
 
 (define (display-usage)
-  (display "Usage: ")
-  (display (find-system-path 'run-file))
-  (display " vol-file p-system-path")
-  (newline))
+  (eprintf "Usage: ~a vol-file p-system-path" (find-system-path 'run-file)))
 
 (define (input-bytes)
   (let ((bytes-read (read-bytes read-block-size)))
@@ -26,10 +23,11 @@
           (text-file (cadr params)))
       (if (file-exists? vol-file)
           (let* ((psys-vol (make-psys-vol vol-file))
-                 (can-write? (apply psys-vol 
-                              'can-write
-                              (psys-vol 'vol-name)
-                              (string-split (string-upcase text-file) "/"))))
+                 (can-write? (apply psys-vol
+                                    'can-write
+                                    (psys-vol 'vol-name)
+                                    (string-split (string-upcase text-file)
+                                                  "/"))))
             (if can-write?
                 (let ((byte-str (apply psys-vol
                                        'write
@@ -41,6 +39,6 @@
                   (let ((out (open-output-file vol-file)))
                     (write-bytes byte-str out)
                     (close-output-port out)))
-                (printf "Can't write to ~a" text-file)))
-          (printf "Container File: ~a not found." vol-file)))
+                (eprintf "Can't write to ~a" text-file)))
+          (eprintf "Container File: ~a not found." vol-file)))
     (display-usage))
