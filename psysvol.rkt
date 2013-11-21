@@ -222,9 +222,11 @@
                          (+ block-offset (fi-first-block file-info))
                          file-info 
                          container-file)
-            (make-file in-port block-offset file-info container-file))))
+            (make-file block-offset file-info container-file))))
     (let* ((vol-info (fbytes->vi in-port vol-info-start))
-           (dir (map dir-entry (range 1 (+ (vi-number-of-files vol-info) 1)))))
+           (dir (append (map dir-entry
+                             (range 1 (+ (vi-number-of-files vol-info) 1)))
+                        (list (make-new-object)))))
       (lambda (op . arg)
         (cond ((eq? op 'list)
                (list (make-fi
@@ -234,7 +236,7 @@
                       (vi-volume-name vol-info)
                       block-size
                       (fi-last-access file-info))
-                     (map (lambda (f) (f 'list)) dir)))
+                     (filter identity (map (lambda (f) (f 'list)) dir))))
               ((eq? op 'vol-name) (vi-volume-name vol-info))
               ((eq? op 'outer-used) (fi-blocks-used file-info))
               ((eq? op 'inner-used)
@@ -272,14 +274,10 @@
                                      (fi-file-name file-info)
                                      (fi-last-byte file-info)
                                      (fi-last-access file-info))))))
-              ((eq? op 'can-write)
-               (and (> (length arg) 1)
-                    (string=? (car arg) (vi-volume-name vol-info))
-                    (ormap (lambda (f) (apply f op (cdr arg))) dir)))
-              ((eq? op 'write)
+              ((or (eq? op 'write) (eq? op 'create-file))
                (if (string=? (car arg) (vi-volume-name vol-info))
                  ; it's on this path, we have to descend it
-                 (let ((vol-image (apply vol->bytes vol-info dir 'write (cdr arg))))
+                 (let ((vol-image (apply vol->bytes vol-info dir op (cdr arg))))
                    (if (eq? (fi-file-kind file-info) 'Vol)
                      vol-image
                      (values vol-image
@@ -298,6 +296,15 @@
                          (file->bytes in-port 0 file-info)
                          file-info)
                        (close-input-port in-port)))))
+              ((eq? op 'file-exists?)
+               (and (> (length arg) 1)
+                    (string=? (car arg) (vi-volume-name vol-info))
+                    (ormap (lambda (f) (apply f op (cdr arg))) dir)))
+              ((eq? op 'vol-exists?)
+               (and (not (null? arg))
+                    (string=? (car arg) (vi-volume-name vol-info))
+                    (or (= (length arg) 1)
+                        (ormap (lambda (f) (apply f op (cdr arg))) dir))))
               ((eq? op 'read)
                (if (and (> (length arg) 1) (string=? (car arg) (vi-volume-name vol-info)))
                    ; using ormap we get the converted text or #f
@@ -307,8 +314,11 @@
 
                                                     
 (define (vol->bytes vol-info dir op . arg)
-  (define (vol-iter dir block-offset dir-bytes vol-bytes)
+  (define (vol-iter dir block-offset dir-bytes vol-bytes cnt)
     (if (null? dir)
+      ; here would be the place to introduce new objects
+      ; new file required if op is 'create-file, length arg = 3
+      ;(let* ((new-object (if ... 
       (let ((new-eov-block (max (vi-eov-block vol-info)
                                 (+ (vi-last-block vol-info)
                                    (byte-blocks (bytes-length vol-bytes))))))
@@ -318,7 +328,7 @@
                                           (vi-file-kind vol-info)
                                           (vi-volume-name vol-info)
                                           new-eov-block
-                                          (vi-number-of-files vol-info)
+                                          cnt
                                           (vi-load-time vol-info)
                                           (vi-last-boot vol-info)))
                       dir-bytes
@@ -334,22 +344,24 @@
                                      (block-bytes (vi-last-block vol-info)))
                                   0)))
       (let-values (((this-image this-fi) (apply (car dir) op arg)))
-        (let ((new-block-offset (+ block-offset (fi-blocks-used this-fi))))
-          ;(when (eof-object? this-image) (display "oops") (display (fi-file-name this-fi)) (display (fi-blocks-used this-fi)) (display ":") (display (fi-last-byte this-fi)))
-          (vol-iter (cdr dir)
-                    new-block-offset
-                    (bytes-append dir-bytes
-                                  (fi->bytes
-                                    (make-fi block-offset
-                                             new-block-offset
-                                             (fi-file-kind this-fi)
-                                             (fi-file-name this-fi)
-                                             (fi-last-byte this-fi)
-                                             (fi-last-access this-fi))))
-                    (bytes-append vol-bytes this-image))))))
-  (vol-iter dir (vi-last-block vol-info) #"" #""))
+        (if this-image
+          (let ((new-block-offset (+ block-offset (fi-blocks-used this-fi))))
+            (vol-iter (cdr dir)
+                      new-block-offset
+                      (bytes-append dir-bytes
+                                    (fi->bytes
+                                      (make-fi block-offset
+                                               new-block-offset
+                                               (fi-file-kind this-fi)
+                                               (fi-file-name this-fi)
+                                               (fi-last-byte this-fi)
+                                               (fi-last-access this-fi))))
+                      (bytes-append vol-bytes this-image)
+                      (+ cnt 1)))
+          (vol-iter (cdr dir) block-offset dir-bytes vol-bytes cnt)))))
+  (vol-iter dir (vi-last-block vol-info) #"" #"" 0))
  
-(define (make-file in-port block-offset file-info container-file)
+(define (make-file block-offset file-info container-file)
   (lambda (op . arg)
     (cond ((eq? op 'list)
            (list (make-fi (+ (fi-first-block file-info) block-offset)
@@ -363,8 +375,6 @@
           ; provide a consistant interface for volume and file objects
           ((eq? op 'outer-used) (fi-blocks-used file-info))
           ((eq? op 'inner-used) (fi-blocks-used file-info))
-          ((eq? op 'outer-free) #f)
-          ((eq? op 'inner-free) #f)
           ((eq? op 'bin-image)
            (let ((in-port (container-file 'open-input)))
              (begin0
@@ -372,11 +382,7 @@
                  (file->bytes in-port block-offset file-info)
                  file-info)
                (close-input-port in-port))))
-          ((eq? op 'can-write)
-           (and (= (length arg) 1)
-                (string=? (car arg) (fi-file-name file-info))
-                (eq? (fi-file-kind file-info) 'Text)))
-          ((eq? op 'write)
+          ((or (eq? op 'write) (eq? op 'create-file))
            (if (string=? (car arg) (fi-file-name file-info))
              ; this is the file we are meant to be overwriting
              (if (eq? (fi-file-kind file-info) 'Text)
@@ -401,6 +407,10 @@
                    (file->bytes in-port block-offset file-info)
                    file-info)
                  (close-input-port in-port)))))
+          ((eq? op 'file-exists?)
+           (and (= (length arg) 1)
+                (string=? (car arg) (fi-file-name file-info))))
+          ((eq? op 'vol-exists?) #f)
           ((eq? op 'read)
            (if (and (= (length arg) 1)
                     (string=? (car arg) (fi-file-name file-info)))
@@ -410,12 +420,12 @@
                        (file->text in-port block-offset file-info)
                        (close-input-port in-port)))
                    (raise-user-error 'file-obj 
-                                     "Unable to read ~a file kind."
+                                     "Unable to read file kind ~a."
                                      (fi-file-kind file-info)))
-                   #f)))))
+               #f))
+          (else #f))))
 
 (define (file->bytes in-port block-offset file-info)
-  ;(newline) (display block-offset) (display ">") (display (fi-file-name file-info)) (display ":") (display (fi-first-block file-info)) (newline)
   (file-position in-port (block-bytes (+ block-offset
                                          (fi-first-block file-info))))
   (read-bytes (block-bytes (fi-blocks-used file-info))
@@ -491,6 +501,29 @@
                                      #f
                                      (bytes-append file-text
                                                    (bytes pos-byte)))))))))
+
+; place holder for new file system objects
+(define (make-new-object)
+  (lambda (op . arg)
+    (cond ((eq? op 'outer-used) 0)
+          ((eq? op 'inner-used) 0)
+          ((eq? op 'write) (values #f #f))
+          ((eq? op 'create-file)
+           (if (= (length arg) 2)
+             (let ((new-image (text->file (cadr arg))))
+               (values (bytes-append new-image
+                                     (make-bytes (- block-size
+                                                    (bytes-last-block (bytes-length new-image)))
+                                                 0))
+                       (make-fi 0
+                                (byte-blocks (bytes-length new-image))
+                                'Text
+                                (car arg) ; fixme: too long a filename will just get truncate
+                                (bytes-last-block (bytes-length new-image))
+                                (current-date))))
+             (values #f #f)))
+          ; 'create-vol
+          (else #f))))
 
 
 

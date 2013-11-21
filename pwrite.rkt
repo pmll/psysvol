@@ -18,27 +18,28 @@
         #""
         (bytes-append bytes-read (input-bytes)))))
 
-(if (= 2 (length params))
-    (let ((vol-file  (car params))
-          (text-file (cadr params)))
-      (if (file-exists? vol-file)
-          (let* ((psys-vol (make-psys-vol vol-file))
-                 (can-write? (apply psys-vol
-                                    'can-write
-                                    (psys-vol 'vol-name)
-                                    (string-split (string-upcase text-file)
-                                                  "/"))))
-            (if can-write?
-                (let ((byte-str (apply psys-vol
-                                       'write
-                                       (psys-vol 'vol-name)
-                                       (append (string-split (string-upcase text-file)
-                                                             "/")
-                                               (list (input-bytes))))))
-                  (ripple vol-file)
-                  (let ((out (open-output-file vol-file)))
-                    (write-bytes byte-str out)
-                    (close-output-port out)))
-                (eprintf "Can't write to ~a" text-file)))
-          (eprintf "Container File: ~a not found." vol-file)))
-    (display-usage))
+(with-handlers
+  ((exn:fail:user?
+     (lambda (e) (eprintf (exn-message e)))))
+  (if (= 2 (length params))
+      (let* ((vol-file  (car params))
+             (text-file (cadr params)))
+        (if (file-exists? vol-file)
+            (let* ((psys-vol (make-psys-vol vol-file))
+                   (file-path (cons (psys-vol 'vol-name)
+                                    (string-split (string-upcase text-file) "/")))
+                   (vol-path (take file-path (- (length file-path) 1)))
+                   (mode (cond ((apply psys-vol 'file-exists? file-path) 'write)
+                               ((apply psys-vol 'vol-exists? vol-path) 'create-file)
+                               (else #f))))
+              (if mode
+                  (let ((byte-str (apply psys-vol 
+                                         mode
+                                         (append file-path (list (input-bytes))))))
+                    (ripple vol-file)
+                    (let ((out (open-output-file vol-file)))
+                      (write-bytes byte-str out)
+                      (close-output-port out)))
+                  (eprintf "Cannot create ~a." text-file)))
+            (eprintf "Container file ~a not found." vol-file)))
+      (display-usage)))
