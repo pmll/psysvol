@@ -8,10 +8,8 @@
 (define params (vector->list (current-command-line-arguments)))
 
 (define (display-usage)
-  (display "Usage: ")
-  (display (find-system-path 'run-file))
-  (display " [-s] vol-file [p-system-sub-volume]")
-  (newline))
+  (eprintf "Usage: ~a [-s] vol-file [p-system-sub-volume]\n"
+           (find-system-path 'run-file)))
 
 (define (extract-params)
   (define (set-mode params)
@@ -27,18 +25,21 @@
           (else (values #f #f #f))))
   (set-mode params))
 
-(let-values (((mode vol-file svol) (extract-params)))
-  (if (and mode vol-file svol)
-      (if (file-exists? vol-file)
-          (let* ((psys-vol (make-psys-vol vol-file))
-                 (free (apply psys-vol 
-                              mode
-                              (psys-vol 'vol-name)
-                              (string-split (string-upcase svol) "/"))))
-            (if free
-                (printf "~a blocks free (i.e. ~a bytes)\n"
-                        free
-                        (block-bytes free))
-                (printf "P-system subvolume: ~a not found." svol)))
-          (printf "Container File: ~a not found." vol-file))
-      (display-usage)))
+(with-handlers
+  ((exn:fail:user?
+      (lambda (e) (eprintf "~a\n" (exn-message e)))))
+  (let-values (((mode vol-file svol) (extract-params)))
+    (if (and mode vol-file svol)
+        (if (file-exists? vol-file)
+            (let* ((psys-vol (make-psys-vol vol-file))
+                   (free (apply psys-vol 
+                                mode
+                                (psys-vol 'vol-name)
+                                (string-split (string-upcase svol) "/"))))
+              (if free
+                  (printf "~a blocks free (i.e. ~a bytes)\n"
+                          free
+                          (block-bytes free))
+                  (eprintf "P-system subvolume: ~a not found.\n" svol)))
+            (eprintf "Container File: ~a not found.\n" vol-file))
+        (display-usage))))

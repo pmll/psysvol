@@ -9,10 +9,8 @@
 (define indent-size 2)
 
 (define (display-usage)
-  (display "Usage: ")
-  (display (find-system-path 'run-file))
-  (display " vol-file [file-1 file-2 ...]")
-  (newline))
+  (eprintf "Usage: ~a vol-file [file-1 file-2 ...]\n"
+           (find-system-path 'run-file)))
 
 ; * becomes .*, ? becomes ., [] stays as is
 ; . becomes \.
@@ -92,20 +90,23 @@
           "")))
   (apply string-append (map file-obj->string file-lst)))
 
-(if (null? params)
-    (display-usage)
-    (let ((vol-file (car params))
-          (match-lst (cdr params)))      
-      (if (file-exists? vol-file)
-          (let* ((psys-vol (make-psys-vol vol-file))
-                 (listing-str (listing->string (list (psys-vol 'list)) 
-                                               0 
-                                               (map (lambda (str)
-                                                      (glob->regexp 
-                                                       (string-upcase str)))
-                                                    match-lst))))
-            (display-heading)
-            (display listing-str)
-            (when (string=? listing-str "")
-              (display "No matching entries found") (newline)))
-          (printf "File: ~a not found" vol-file))))
+(with-handlers
+  ((exn:fail:user?
+   (lambda (e) (eprintf "~a\n" (exn-message e)))))
+  (if (null? params)
+      (display-usage)
+      (let ((vol-file (car params))
+            (match-lst (cdr params)))      
+        (if (file-exists? vol-file)
+            (let* ((psys-vol (make-psys-vol vol-file))
+                   (listing-str (listing->string (list (psys-vol 'list)) 
+                                                 0 
+                                                 (map (lambda (str)
+                                                        (glob->regexp 
+                                                         (string-upcase str)))
+                                                      match-lst))))
+              (display-heading)
+              (display listing-str)
+              (when (string=? listing-str "")
+                (display "No matching entries found") (newline)))
+            (eprintf "Container File: ~a not found\n" vol-file)))))

@@ -1,6 +1,6 @@
 #lang racket
 
-; todo: make sub vol, delete, delete vol, crunch, 
+; todo: make sub vol, delete, delete vol, crunch, lock container file
 ;       debugging tool: serialise volume content so as to allow easy comparison
 ;                       between volumes
 
@@ -43,6 +43,17 @@
                    file-name
                    last-byte
                    last-access))
+
+(define file-kind (vector-immutable 'None
+                                    'XDsk
+                                    'Code
+                                    'Text
+                                    'Info 
+                                    'Data
+                                    'Graf
+                                    'Foto
+                                    'Secu
+                                    'Svol))
 
 (define (raise-corruption-exception)
   (raise-user-error "Container file is corrupt or not a P-System volume.")) 
@@ -94,34 +105,13 @@
                  #f
                  0))))
 
-; this seems silly, is there a (sensible) way I could define a reversible operation?
-(define (file-kind kind-b)
-  (case (bitwise-bit-field kind-b 0 4)
-    ((0) 'None)
-    ((1) 'XDsk)
-    ((2) 'Code)
-    ((3) 'Text)
-    ((4) 'Info)
-    ((5) 'Data)
-    ((6) 'Graf)
-    ((7) 'Foto)
-    ((8) 'Secu)
-    ((9) 'Svol)    
-    (else 'Unkn)))
+(define (int16->file-kind kind-int)
+  (let ((kind-b (bitwise-bit-field kind-int 0 4)))
+    (if (< kind-b (vector-length file-kind))
+        (vector-ref file-kind kind-b)
+        'Unkn)))
 
-(define (file-kind->byte fk)
-  (case fk
-    ('None 0)
-    ('XDsk 1)
-    ('Code 2)
-    ('Text 3)
-    ('Info 4)
-    ('Data 5)
-    ('Graf 6)
-    ('Foto 7)
-    ('Secu 8)
-    ('Svol 9)
-    (else 0)))
+(define (file-kind->int16 fk) (or (vector-memq fk file-kind) 0))
 
 (define (fbytes->vi in-port start)
   (file-position in-port start)
@@ -155,7 +145,7 @@
       ((exn:fail:user? (lambda (e) (raise-corruption-exception))))
       (make-fi (bytes->int16 byte-str 0)
                (bytes->int16 byte-str 2)
-               (file-kind (bytes->int16 byte-str 4))
+               (int16->file-kind (bytes->int16 byte-str 4))
                (pstring->string byte-str 6 15)
                (bytes->int16 byte-str 22)
                (time-stamp (bytes->int16 byte-str 4)
@@ -167,7 +157,7 @@
                   (int16->bytes (fi-last-block file-info))
                   (int16->bytes
                     (bitwise-ior 
-                      (file-kind->byte (fi-file-kind file-info))
+                      (file-kind->int16 (fi-file-kind file-info))
                       (arithmetic-shift (date-minute last-access) 9)
                       (arithmetic-shift (+ (date-hour last-access) 1) 4)))
                   (string->pstring (fi-file-name file-info) 16)
@@ -232,13 +222,12 @@
       (when (not (valid-volume? vol-info dir)) (raise-corruption-exception))
       (lambda (op . arg)
         (cond ((eq? op 'list)
-               (list (make-fi
-                      block-offset
-                      (+ block-offset (vi-eov-block vol-info))
-                      (fi-file-kind file-info)
-                      (vi-volume-name vol-info)
-                      block-size
-                      (fi-last-access file-info))
+               (list (make-fi block-offset
+                              (+ block-offset (vi-eov-block vol-info))
+                              (fi-file-kind file-info)
+                              (vi-volume-name vol-info)
+                              block-size
+                              (fi-last-access file-info))
                      (filter identity (map (lambda (f) (f 'list)) dir))))
               ((eq? op 'vol-name) (vi-volume-name vol-info))
               ((eq? op 'outer-used) (fi-blocks-used file-info))
@@ -277,7 +266,7 @@
                                      (fi-file-name file-info)
                                      (fi-last-byte file-info)
                                      (fi-last-access file-info))))))
-              ((or (eq? op 'write) (eq? op 'create-file))
+              ((or (eq? op 'write) (eq? op 'create-file) (eq? op 'create-vol))
                (if (string=? (car arg) (vi-volume-name vol-info))
                  ; it's on this path, we have to descend it
                  (let ((vol-image (apply vol->bytes vol-info dir op (cdr arg))))
@@ -328,7 +317,7 @@
                           (fi-last-byte file-info)
                           (fi-last-access file-info))
                  '()))
-          ; the two type of used forms are meaningless for files, we just
+          ; the two used forms are meaningless for files, we just
           ; provide a consistant interface for volume and file objects
           ((eq? op 'outer-used) (fi-blocks-used file-info))
           ((eq? op 'inner-used) (fi-blocks-used file-info))
@@ -339,7 +328,7 @@
                  (file->bytes in-port block-offset file-info)
                  file-info)
                (close-input-port in-port))))
-          ((or (eq? op 'write) (eq? op 'create-file))
+          ((or (eq? op 'write) (eq? op 'create-file) (eq? op 'create-vol))
            (if (string=? (car arg) (fi-file-name file-info))
              ; this is the file we are meant to be overwriting
              (if (eq? (fi-file-kind file-info) 'Text)
@@ -399,11 +388,32 @@
                        (make-fi 0
                                 (byte-blocks (bytes-length new-image))
                                 'Text
-                                (car arg) ; fixme: too long a filename will just get truncate
+                                (car arg) ; fixme: too long a filename will just get truncated
                                 (bytes-last-block (bytes-length new-image))
                                 (current-date))))
              (values #f #f)))
-          ; 'create-vol
+          ((eq? op 'create-vol)
+           (if (= (length arg) 1)
+               (values (bytes-append
+                        (make-bytes (block-bytes volume-header-blocks) 0)
+                        (vi->bytes (make-vi 0
+                                            6
+                                            0
+                                            (car arg)  ; fixme: too
+                                            6
+                                            0
+                                            0
+                                            0))
+                        (make-bytes (- (block-bytes (- 6 volume-header-blocks))
+                                       dir-entry-size)
+                                    0))
+                       (make-fi 0
+                                6
+                                'Svol
+                                (string-append (car arg) ".SVOL")
+                                block-size
+                                (current-date)))
+               (values #f #f)))
           (else #f))))
 
 (define (valid-volume? vol-info dir)
@@ -434,6 +444,9 @@
                (<= (fi-last-byte file-info) block-size)))))
   (and (zero? (vi-first-block vol-info)) 
        (> (vi-last-block vol-info) volume-header-blocks)
+       (<= (+ (byte-blocks (* (vi-number-of-files vol-info) dir-entry-size))
+              volume-header-blocks)
+           (vi-last-block vol-info))
        (andmap valid-dir-entry? dir)
        (not (dir-overlap? dir))))
 
@@ -453,6 +466,7 @@
                                           (vi-load-time vol-info)
                                           (vi-last-boot vol-info)))
                       dir-bytes
+                      ; max shouldn't be needed here?
                       (make-bytes (max (- (block-bytes (vi-last-block vol-info))
                                           (block-bytes volume-header-blocks)
                                           (bytes-length dir-bytes)
