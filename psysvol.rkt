@@ -182,19 +182,18 @@
                 ((not (= (file-or-directory-modify-seconds container-file)
                          file-modified))
                  (raise-user-error "File ~a has been modified." container-file))
-                (else
-                 (cond ((eq? op 'open-input)
-                        (open-input-file container-file #:mode 'binary))
-                       ((eq? op 'file-info)
-                        (make-fi 0
-                                 (byte-blocks (file-size container-file))
-                                 'Vol
-                                 container-file
-                                 (bytes-last-block (file-size container-file))
-                                 (seconds->date file-modified)))
-                       (else (raise-user-error 'register-container-file
+                ((eq? op 'open-input)
+                 (open-input-file container-file #:mode 'binary))
+                ((eq? op 'file-info)
+                 (make-fi 0
+                          (byte-blocks (file-size container-file))
+                          'Vol
+                          container-file
+                          (bytes-last-block (file-size container-file))
+                          (seconds->date file-modified)))
+                (else (raise-user-error 'register-container-file
                                                "Invalid operation ~a."
-                                               op)))))))
+                                               op)))))
       (raise-user-error "File not found: ~a." container-file)))
 
 (define (make-psys-vol container-file)
@@ -228,7 +227,7 @@
                               (vi-volume-name vol-info)
                               block-size
                               (fi-last-access file-info))
-                     (filter identity (map (lambda (f) (f 'list)) dir))))
+                     (filter-map (lambda (f) (f 'list)) dir)))
               ((eq? op 'vol-name) (vi-volume-name vol-info))
               ((eq? op 'outer-used) (fi-blocks-used file-info))
               ((eq? op 'inner-used)
