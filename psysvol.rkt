@@ -1,6 +1,6 @@
 #lang racket
 
-; todo: make sub vol, delete, delete vol, crunch, lock container file
+; todo: delete vol, crunch, lock container file, do we need a rename?
 ;       debugging tool: serialise volume content so as to allow easy comparison
 ;                       between volumes
 
@@ -265,7 +265,7 @@
                                      (fi-file-name file-info)
                                      (fi-last-byte file-info)
                                      (fi-last-access file-info))))))
-              ((or (eq? op 'write) (eq? op 'create-file) (eq? op 'create-vol))
+              ((update-operation? op)
                (if (string=? (car arg) (vi-volume-name vol-info))
                  ; it's on this path, we have to descend it
                  (let ((vol-image (apply vol->bytes vol-info dir op (cdr arg))))
@@ -308,67 +308,68 @@
 
 (define (make-file block-offset file-info container-file)
   (lambda (op . arg)
-    (cond ((eq? op 'list)
-           (list (make-fi (+ (fi-first-block file-info) block-offset)
-                          (+ (fi-last-block file-info) block-offset)
-                          (fi-file-kind file-info)
-                          (fi-file-name file-info)
-                          (fi-last-byte file-info)
-                          (fi-last-access file-info))
-                 '()))
-          ; the two used forms are meaningless for files, we just
-          ; provide a consistant interface for volume and file objects
-          ((eq? op 'outer-used) (fi-blocks-used file-info))
-          ((eq? op 'inner-used) (fi-blocks-used file-info))
-          ((eq? op 'bin-image)
+    (cond
+      ((eq? op 'list)
+       (list (make-fi (+ (fi-first-block file-info) block-offset)
+                      (+ (fi-last-block file-info) block-offset)
+                      (fi-file-kind file-info)
+                      (fi-file-name file-info)
+                      (fi-last-byte file-info)
+                      (fi-last-access file-info))
+            '()))
+      ; the two used forms are meaningless for files, we just
+      ; provide a consistant interface for volume and file objects
+      ((eq? op 'outer-used) (fi-blocks-used file-info))
+      ((eq? op 'inner-used) (fi-blocks-used file-info))
+      ((eq? op 'bin-image)
+       (let ((in-port (container-file 'open-input)))
+         (begin0
+           (values (file->bytes in-port block-offset file-info)
+                   file-info)
+           (close-input-port in-port))))
+      ((update-operation? op)
+       (if (string=? (car arg) (fi-file-name file-info))
+           ; this is the file we are working on
+           (cond 
+             ((eq? op 'delete) (values #f #f))
+             ((eq? (fi-file-kind file-info) 'Text)
+              (let* ((new-image (text->file (cadr arg)))
+                     (image-length (bytes-length new-image))
+                     (last-bytes (bytes-last-block image-length)))
+                (values (bytes-append new-image
+                                      (make-bytes (- block-size last-bytes) 0))
+                        (make-fi (fi-first-block file-info)
+                                 (+ (byte-blocks image-length)
+                                    (fi-first-block file-info))
+                                 (fi-file-kind file-info)
+                                 (fi-file-name file-info)
+                                 last-bytes
+                                 (current-date)))))
+             (else (raise-user-error "Unable to write to file kind ~a."
+                                     (fi-file-kind file-info))))
+           ; it's not this file, just produce a bin-image of it
            (let ((in-port (container-file 'open-input)))
              (begin0
-               (values
-                 (file->bytes in-port block-offset file-info)
-                 file-info)
-               (close-input-port in-port))))
-          ((or (eq? op 'write) (eq? op 'create-file) (eq? op 'create-vol))
-           (if (string=? (car arg) (fi-file-name file-info))
-             ; this is the file we are meant to be overwriting
-             (if (eq? (fi-file-kind file-info) 'Text)
-               (let ((new-image (text->file (cadr arg))))
-                 (values (bytes-append new-image
-                                       (make-bytes (- block-size
-                                                      (bytes-last-block (bytes-length new-image)))
-                                                   0))
-                         (make-fi (fi-first-block file-info)
-                                  (+ (byte-blocks (bytes-length new-image))
-                                     (fi-first-block file-info))
-                                  (fi-file-kind file-info)
-                                  (fi-file-name file-info)
-                                  (bytes-last-block (bytes-length new-image))
-                                  (current-date))))
-               (raise-user-error "Unable to write to file kind ~a."
+               (values (file->bytes in-port block-offset file-info)
+                       file-info)
+               (close-input-port in-port)))))
+      ((eq? op 'file-exists?)
+       (and (= (length arg) 1)
+            (string=? (car arg) (fi-file-name file-info))))
+      ((eq? op 'vol-exists?) #f)
+      ((eq? op 'read)
+       (if (and (= (length arg) 1)
+                (string=? (car arg) (fi-file-name file-info)))
+           (if (eq? (fi-file-kind file-info) 'Text)
+               (let ((in-port (container-file 'open-input)))
+                 (begin0
+                   (file->text in-port block-offset file-info)
+                   (close-input-port in-port)))
+               (raise-user-error "Unable to read file kind ~a."
                                  (fi-file-kind file-info)))
-             ; it's not this file, just produce a bin-image of it
-             (let ((in-port (container-file 'open-input)))
-               (begin0
-                 (values
-                   (file->bytes in-port block-offset file-info)
-                   file-info)
-                 (close-input-port in-port)))))
-          ((eq? op 'file-exists?)
-           (and (= (length arg) 1)
-                (string=? (car arg) (fi-file-name file-info))))
-          ((eq? op 'vol-exists?) #f)
-          ((eq? op 'read)
-           (if (and (= (length arg) 1)
-                    (string=? (car arg) (fi-file-name file-info)))
-               (if (eq? (fi-file-kind file-info) 'Text)
-                   (let ((in-port (container-file 'open-input)))
-                     (begin0
-                       (file->text in-port block-offset file-info)
-                       (close-input-port in-port)))
-                   (raise-user-error "Unable to read file kind ~a."
-                                     (fi-file-kind file-info)))
-               #f))
-          ((eq? op 'file-info) file-info)
-          (else #f))))
+           #f))
+      ((eq? op 'file-info) file-info)
+      (else #f))))
 
 ; place holder for new file system objects
 (define (make-new-object)
@@ -376,6 +377,7 @@
     (cond ((eq? op 'outer-used) 0)
           ((eq? op 'inner-used) 0)
           ((eq? op 'write) (values #f #f))
+          ((eq? op 'delete) (values #f #f))
           ((eq? op 'file-info) (make-fi 0 0 'Spare "" 0 0))
           ((eq? op 'create-file)
            (if (= (length arg) 2)
@@ -448,6 +450,9 @@
            (vi-last-block vol-info))
        (andmap valid-dir-entry? dir)
        (not (dir-overlap? dir))))
+
+(define (update-operation? op)
+  (memq op (list 'write 'create-file 'create-vol 'delete)))
 
 (define (vol->bytes vol-info dir op . arg)
   (define (vol-iter dir block-offset dir-bytes vol-bytes cnt)
