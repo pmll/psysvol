@@ -1,6 +1,6 @@
 #lang racket
 
-; todo: delete vol, crunch, lock container file, do we need a rename?
+; todo: crunch, lock container file, do we need a rename?
 ;       debugging tool: serialise volume content so as to allow easy comparison
 ;                       between volumes
 
@@ -92,6 +92,7 @@
          (has-time? (and (< minutes 60) (> hours -1) (< hours 24))))
     (with-handlers
       ((exn:fail:contract? (lambda (e) ((raise-user-error "Bad date bytes")))))
+      ;((exn:fail:contract? (lambda (e) ((current-date)))))
       (make-date 0
                  ; the time part is pretty non-standard, I think
                  ; where it appears not to be used, treat as midnight
@@ -172,6 +173,8 @@
 (define (fi-blocks-used file-info)
   (- (fi-last-block file-info) (fi-first-block file-info)))
 
+(define (last? lst) (and (not (null? lst)) (null? (cdr lst))))
+
 ; really need to look into file locking possibilities...
 (define (register-container-file container-file)
   (if (file-exists? container-file)
@@ -220,91 +223,119 @@
                         (list (make-new-object)))))
       (when (not (valid-volume? vol-info dir)) (raise-corruption-exception))
       (lambda (op . arg)
-        (cond ((eq? op 'list)
-               (list (make-fi block-offset
-                              (+ block-offset (vi-eov-block vol-info))
-                              (fi-file-kind file-info)
-                              (vi-volume-name vol-info)
-                              block-size
-                              (fi-last-access file-info))
-                     (filter-map (lambda (f) (f 'list)) dir)))
-              ((eq? op 'vol-name) (vi-volume-name vol-info))
-              ((eq? op 'outer-used) (fi-blocks-used file-info))
-              ((eq? op 'inner-used)
-               (foldl + (vi-last-block vol-info) (map (lambda (f) (f op)) dir)))
-              ((eq? op 'outer-free)
-               (if (string=? (car arg) (vi-volume-name vol-info))
-                   (if (= (length arg) 1)
-                       (- (vi-eov-block vol-info)
-                          (foldl + 
-                                 (vi-last-block vol-info)
-                                 (map (lambda (f) (f 'outer-used)) dir)))
-                       (ormap (lambda (f) (apply f op (cdr arg))) dir))
-                   #f))
-              ((eq? op 'inner-free)
-               (if (string=? (car arg) (vi-volume-name vol-info))
-                   (if (= (length arg) 1)
-                       (- (vi-eov-block vol-info)
-                          (foldl + 
-                                 (vi-last-block vol-info)
-                                 (map (lambda (f) (f 'inner-used)) dir)))
-                       (ormap (lambda (f) (apply f op (cdr arg))) dir))
-                   #f))
-              ((eq? op 'bin-image)
-               ; in the final version, we will be able to do a straight
-               ; forward copy of the entire volume image, but for now, 
-               ; this is proof of concept...
-               (let ((vol-image (vol->bytes vol-info dir 'bin-image)))
-                 (if (eq? (fi-file-kind file-info) 'Vol)
-                     vol-image
-                    (values vol-image
-                            (make-fi (fi-first-block file-info)
-                                     (+ (byte-blocks (bytes-length vol-image))
-                                        (fi-first-block file-info))
-                                     (fi-file-kind file-info)
-                                     (fi-file-name file-info)
-                                     (fi-last-byte file-info)
-                                     (fi-last-access file-info))))))
-              ((update-operation? op)
-               (if (string=? (car arg) (vi-volume-name vol-info))
-                 ; it's on this path, we have to descend it
-                 (let ((vol-image (apply vol->bytes vol-info dir op (cdr arg))))
+        (cond
+          ((eq? op 'list)
+           (list (make-fi block-offset
+                          (+ block-offset (vi-eov-block vol-info))
+                          (fi-file-kind file-info)
+                          (vi-volume-name vol-info)
+                          block-size
+                          (fi-last-access file-info))
+                 (filter-map (lambda (f) (f 'list)) dir)))
+          ((eq? op 'vol-name) (vi-volume-name vol-info))
+          ((eq? op 'outer-used) (fi-blocks-used file-info))
+          ((eq? op 'inner-used)
+           (foldl + (vi-last-block vol-info) (map (lambda (f) (f op)) dir)))
+          ((eq? op 'outer-free)
+           (if (string=? (car arg) (vi-volume-name vol-info))
+               (if (last? arg)
+                   (- (vi-eov-block vol-info)
+                      (foldl + 
+                             (vi-last-block vol-info)
+                             (map (lambda (f) (f 'outer-used)) dir)))
+                   (ormap (lambda (f) (apply f op (cdr arg))) dir))
+               #f))
+          ((eq? op 'inner-free)
+           (if (string=? (car arg) (vi-volume-name vol-info))
+               (if (last? arg)
+                   (- (vi-eov-block vol-info)
+                      (foldl + 
+                             (vi-last-block vol-info)
+                             (map (lambda (f) (f 'inner-used)) dir)))
+                   (ormap (lambda (f) (apply f op (cdr arg))) dir))
+               #f))
+          ((eq? op 'bin-image)
+           ; in the final version, we will be able to do a straight
+           ; forward copy of the entire volume image, but for now, 
+           ; this is proof of concept...
+           (let ((vol-image (vol->bytes vol-info dir 'bin-image)))
+             (if (eq? (fi-file-kind file-info) 'Vol)
+                 vol-image
+                 (values vol-image
+                         (make-fi (fi-first-block file-info)
+                                  (+ (byte-blocks (bytes-length vol-image))
+                                     (fi-first-block file-info))
+                                  (fi-file-kind file-info)
+                                  (fi-file-name file-info)
+                                  (fi-last-byte file-info)
+                                  (fi-last-access file-info))))))
+          ((eq? op 'crunch)
+           (let ((vol-image (vol->bytes vol-info dir op)))
+             (if (eq? (fi-file-kind file-info) 'Vol)
+                 vol-image
+                 (values vol-image
+                         (make-fi (fi-first-block file-info)
+                                  (+ (byte-blocks (bytes-length vol-image))
+                                     (fi-first-block file-info))
+                                  (fi-file-kind file-info)
+                                  (fi-file-name file-info)
+                                  (fi-last-byte file-info)
+                                  (fi-last-access file-info))))))
+          ((update-operation? op)
+           (if (string=? (car arg) (vi-volume-name vol-info))
+               ; it's on this path, we have to descend it
+               (if (and (eq? op 'delete-vol) (last? arg))
                    (if (eq? (fi-file-kind file-info) 'Vol)
-                     vol-image
-                     (values vol-image
-                             (make-fi (fi-first-block file-info)
-                                      (+ (byte-blocks (bytes-length vol-image))
-                                         (fi-first-block file-info))
-                                      (fi-file-kind file-info)
-                                      (fi-file-name file-info)
-                                      (fi-last-byte file-info)
-                                      (fi-last-access file-info)))))
-                   ; it's not on this path,
-                   ; we only need to take the entire svol image as is
-                   (let ((in-port (container-file 'open-input)))
-                     (begin0
-                       (values
-                         (file->bytes in-port 0 file-info)
-                         file-info)
-                       (close-input-port in-port)))))
-              ((eq? op 'file-exists?)
-               (and (> (length arg) 1)
-                    (string=? (car arg) (vi-volume-name vol-info))
-                    (ormap (lambda (f) (apply f op (cdr arg))) dir)))
-              ((eq? op 'vol-exists?)
-               (and (not (null? arg))
-                    (string=? (car arg) (vi-volume-name vol-info))
-                    (or (= (length arg) 1)
-                        (ormap (lambda (f) (apply f op (cdr arg))) dir))))
-              ((eq? op 'read)
-               (if (and (> (length arg) 1) (string=? (car arg) (vi-volume-name vol-info)))
-                   ; using ormap we get the converted text or #f
-                   (ormap (lambda (f) (apply f op (cdr arg))) dir)
-                   #f))
-              ((eq? op 'file-info) file-info)
-              (else (raise-user-error 'make-volume
-                                      "Unknown operation: ~a." 
-                                      op)))))))
+                       (raise-user-error "Cannot delete top level volume")
+                       (values #f #f))
+                   (let ((vol-image (apply vol->bytes vol-info dir op (cdr arg))))
+                     (if (eq? (fi-file-kind file-info) 'Vol)
+                         vol-image
+                         (values vol-image
+                                 (make-fi (fi-first-block file-info)
+                                          (+ (byte-blocks (bytes-length vol-image))
+                                             (fi-first-block file-info))
+                                          (fi-file-kind file-info)
+                                          (fi-file-name file-info)
+                                          (fi-last-byte file-info)
+                                          (fi-last-access file-info))))))
+               ; it's not on this path,
+               ; we only need to take the entire svol image as is
+               (let ((in-port (container-file 'open-input)))
+                 (begin0
+                   (values
+                     ; this looks like a bug right here,
+                     ; i think 0 needs to be the blockoffset of the 
+                     ; containing volume (normally ok for root voule,
+                     ; but not when we are in a sub-volume
+                     (file->bytes in-port block-offset file-info)
+                     file-info)
+                   (close-input-port in-port)))))
+          ((eq? op 'file-exists?)
+           (and (> (length arg) 1)
+                (string=? (car arg) (vi-volume-name vol-info))
+                (ormap (lambda (f) (apply f op (cdr arg))) dir)))
+          ((eq? op 'vol-exists?)
+           (and (not (null? arg))
+                (string=? (car arg) (vi-volume-name vol-info))
+                (or (last? arg)
+                    (ormap (lambda (f) (apply f op (cdr arg))) dir))))
+          ((eq? op 'vol-empty?)
+           (and (not (null? arg))
+                (string=? (car arg) (vi-volume-name vol-info))
+                ; fixme:
+                (or (and (last? arg) (zero? (vi-number-of-files vol-info)))
+                    (ormap (lambda (f) (apply f op (cdr arg))) dir))))
+          ((eq? op 'read)
+           (if (and (> (length arg) 1)
+                    (string=? (car arg) (vi-volume-name vol-info)))
+               ; using ormap we get the converted text or #f
+               (ormap (lambda (f) (apply f op (cdr arg))) dir)
+               #f))
+          ((eq? op 'file-info) file-info)
+          (else (raise-user-error 'make-volume
+                                  "Unknown operation: ~a." 
+                                  op)))))))
 
 (define (make-file block-offset file-info container-file)
   (lambda (op . arg)
@@ -324,11 +355,21 @@
       ((eq? op 'bin-image)
        (let ((in-port (container-file 'open-input)))
          (begin0
-           (values (file->bytes in-port block-offset file-info)
+           (values (file->bytes in-port
+                                (+ block-offset (fi-first-block file-info))
+                                file-info)
+                   file-info)
+           (close-input-port in-port))))
+      ((eq? op 'crunch)
+       (let ((in-port (container-file 'open-input)))
+         (begin0
+           (values (file->bytes in-port
+                                (+ block-offset (fi-first-block file-info))
+                                file-info)
                    file-info)
            (close-input-port in-port))))
       ((update-operation? op)
-       (if (string=? (car arg) (fi-file-name file-info))
+       (if (and (file-update? op) (string=? (car arg) (fi-file-name file-info)))
            ; this is the file we are working on
            (cond 
              ((eq? op 'delete) (values #f #f))
@@ -350,15 +391,16 @@
            ; it's not this file, just produce a bin-image of it
            (let ((in-port (container-file 'open-input)))
              (begin0
-               (values (file->bytes in-port block-offset file-info)
+               (values (file->bytes in-port
+                                    (+ block-offset (fi-first-block file-info))
+                                    file-info)
                        file-info)
                (close-input-port in-port)))))
       ((eq? op 'file-exists?)
-       (and (= (length arg) 1)
+       (and (last? arg)
             (string=? (car arg) (fi-file-name file-info))))
-      ((eq? op 'vol-exists?) #f)
       ((eq? op 'read)
-       (if (and (= (length arg) 1)
+       (if (and (last? arg)
                 (string=? (car arg) (fi-file-name file-info)))
            (if (eq? (fi-file-kind file-info) 'Text)
                (let ((in-port (container-file 'open-input)))
@@ -378,6 +420,8 @@
           ((eq? op 'inner-used) 0)
           ((eq? op 'write) (values #f #f))
           ((eq? op 'delete) (values #f #f))
+          ((eq? op 'delete-vol) (values #f #f))
+          ((eq? op 'crunch) (values #f #f))
           ((eq? op 'file-info) (make-fi 0 0 'Spare "" 0 0))
           ((eq? op 'create-file)
            (if (= (length arg) 2)
@@ -394,7 +438,7 @@
                                 (current-date))))
              (values #f #f)))
           ((eq? op 'create-vol)
-           (if (= (length arg) 1)
+           (if (last? arg)
                (values (bytes-append
                         (make-bytes (block-bytes volume-header-blocks) 0)
                         (vi->bytes (make-vi 0
@@ -452,14 +496,21 @@
        (not (dir-overlap? dir))))
 
 (define (update-operation? op)
-  (memq op (list 'write 'create-file 'create-vol 'delete)))
+  (memq op (list 'write 'create-file 'create-vol 'delete 'delete-vol)))
+
+(define (file-update? op) (or (eq? op 'write) (eq? op 'delete)))
 
 (define (vol->bytes vol-info dir op . arg)
   (define (vol-iter dir block-offset dir-bytes vol-bytes cnt)
     (if (null? dir)
-      (let ((new-eov-block (max (vi-eov-block vol-info)
-                                (+ (vi-last-block vol-info)
-                                   (byte-blocks (bytes-length vol-bytes))))))
+      (let* ((eov-for-image (+ (vi-last-block vol-info)
+                               (byte-blocks (bytes-length vol-bytes))))
+             (new-eov-block (if (eq? op 'crunch)
+                                eov-for-image
+                                (max (vi-eov-block vol-info) eov-for-image))))
+      ;(let ((new-eov-block (max (vi-eov-block vol-info)
+      ;                          (+ (vi-last-block vol-info)
+      ;                             (byte-blocks (bytes-length vol-bytes))))))
         (bytes-append (make-bytes (block-bytes volume-header-blocks) 0)
                       (vi->bytes (make-vi (vi-first-block vol-info)
                                           (vi-last-block vol-info)
@@ -500,9 +551,8 @@
           (vol-iter (cdr dir) block-offset dir-bytes vol-bytes cnt)))))
   (vol-iter dir (vi-last-block vol-info) #"" #"" 0))
  
-(define (file->bytes in-port block-offset file-info)
-  (file-position in-port (block-bytes (+ block-offset
-                                         (fi-first-block file-info))))
+(define (file->bytes in-port start-block file-info)
+  (file-position in-port (block-bytes start-block))
   (read-bytes (block-bytes (fi-blocks-used file-info))
               in-port))
              
