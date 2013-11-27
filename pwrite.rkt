@@ -10,7 +10,7 @@
 (define params (vector->list (current-command-line-arguments)))
 
 (define (display-usage)
-  (eprintf "Usage: ~a vol-file p-system-path" (find-system-path 'run-file)))
+  (eprintf "Usage: ~a vol-file p-system-path\n" (find-system-path 'run-file)))
 
 (define (input-bytes)
   (let ((bytes-read (read-bytes read-block-size)))
@@ -20,7 +20,7 @@
 
 (with-handlers
   ((exn:fail:user?
-     (lambda (e) (eprintf (exn-message e)))))
+     (lambda (e) (eprintf "~a\n" (exn-message e)))))
   (if (= 2 (length params))
       (let* ((vol-file  (car params))
              (text-file (cadr params)))
@@ -40,6 +40,6 @@
                     (let ((out (open-output-file vol-file)))
                       (write-bytes byte-str out)
                       (close-output-port out)))
-                  (eprintf "Cannot create ~a." text-file)))
-            (eprintf "Container file ~a not found." vol-file)))
+                  (eprintf "Cannot create ~a.\n" text-file)))
+            (eprintf "Container file ~a not found.\n" vol-file)))
       (display-usage)))

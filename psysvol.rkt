@@ -1,10 +1,8 @@
 #lang racket
 
-; todo: crunch, lock container file, do we need a rename?
+; todo: lock container file, do we need a rename?
 ;       debugging tool: serialise volume content so as to allow easy comparison
 ;                       between volumes
-
-; fixme: need to check for vol expanding beyond max-vol-blocks
 
 (require racket/date)
 
@@ -255,9 +253,7 @@
                    (ormap (lambda (f) (apply f op (cdr arg))) dir))
                #f))
           ((eq? op 'bin-image)
-           ; in the final version, we will be able to do a straight
-           ; forward copy of the entire volume image, but for now, 
-           ; this is proof of concept...
+           ; bin-image is just proof of concept, it won't be staying...
            (let ((vol-image (vol->bytes vol-info dir 'bin-image)))
              (if (eq? (fi-file-kind file-info) 'Vol)
                  vol-image
@@ -303,13 +299,8 @@
                ; we only need to take the entire svol image as is
                (let ((in-port (container-file 'open-input)))
                  (begin0
-                   (values
-                     ; this looks like a bug right here,
-                     ; i think 0 needs to be the blockoffset of the 
-                     ; containing volume (normally ok for root voule,
-                     ; but not when we are in a sub-volume
-                     (file->bytes in-port block-offset file-info)
-                     file-info)
+                   (values (file->bytes in-port block-offset file-info)
+                           file-info)
                    (close-input-port in-port)))))
           ((eq? op 'file-exists?)
            (and (> (length arg) 1)
@@ -323,7 +314,6 @@
           ((eq? op 'vol-empty?)
            (and (not (null? arg))
                 (string=? (car arg) (vi-volume-name vol-info))
-                ; fixme:
                 (or (and (last? arg) (zero? (vi-number-of-files vol-info)))
                     (ormap (lambda (f) (apply f op (cdr arg))) dir))))
           ((eq? op 'read)
@@ -508,9 +498,8 @@
              (new-eov-block (if (eq? op 'crunch)
                                 eov-for-image
                                 (max (vi-eov-block vol-info) eov-for-image))))
-      ;(let ((new-eov-block (max (vi-eov-block vol-info)
-      ;                          (+ (vi-last-block vol-info)
-      ;                             (byte-blocks (bytes-length vol-bytes))))))
+        (when (> new-eov-block max-vol-blocks)
+          (raise-user-error "Volume too big"))
         (bytes-append (make-bytes (block-bytes volume-header-blocks) 0)
                       (vi->bytes (make-vi (vi-first-block vol-info)
                                           (vi-last-block vol-info)

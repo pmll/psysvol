@@ -7,11 +7,11 @@
 (define params (vector->list (current-command-line-arguments)))
 
 (define (display-usage)
-  (eprintf "Usage: ~a vol-file p-system-path" (find-system-path 'run-file)))
+  (eprintf "Usage: ~a vol-file p-system-path\n" (find-system-path 'run-file)))
 
 (with-handlers 
   ((exn:fail:user?
-     (lambda (exn) (eprintf (exn-message exn)))))
+     (lambda (e) (eprintf "~a\n" (exn-message e)))))
   (if (= 2 (length params))
       (let ((vol-file  (car params))
             (text-file (cadr params)))
@@ -23,6 +23,6 @@
                                 (string-split (string-upcase text-file) "/"))))
               (if text
                   (display text)
-                  (eprintf "P-system file: ~a not found." text-file)))
-            (eprintf "Container File: ~a not found." vol-file)))
+                  (eprintf "P-system file: ~a not found.\n" text-file)))
+            (eprintf "Container File: ~a not found.\n" vol-file)))
       (display-usage)))

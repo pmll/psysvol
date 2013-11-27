@@ -8,7 +8,7 @@
 (define params (vector->list (current-command-line-arguments)))
 
 (define (display-usage)
-  (eprintf "Usage: ~a [-f] vol-file p-system-path" (find-system-path 'run-file)))
+  (eprintf "Usage: ~a [-f] vol-file p-system-path\n" (find-system-path 'run-file)))
 
 (define (extract-params)
   (cond ((null? params) (values #f #f #f))
@@ -21,7 +21,7 @@
 
 (with-handlers
   ((exn:fail:user?
-     (lambda (e) (eprintf (exn-message e)))))
+     (lambda (e) (eprintf "~a\n" (exn-message e)))))
   (let-values (((delete-sub-files? vol-file del-vol) (extract-params)))
     (if (and vol-file del-vol)
       (if (file-exists? vol-file)

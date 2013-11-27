@@ -8,11 +8,11 @@
 (define params (vector->list (current-command-line-arguments)))
 
 (define (display-usage)
-  (eprintf "Usage: ~a vol-file p-system-path" (find-system-path 'run-file)))
+  (eprintf "Usage: ~a vol-file p-system-path\n" (find-system-path 'run-file)))
 
 (with-handlers
   ((exn:fail:user?
-     (lambda (e) (eprintf (exn-message e)))))
+     (lambda (e) (eprintf "~a\n" (exn-message e)))))
   (if (= 2 (length params))
       (let* ((vol-file (car params))
              (del-file (cadr params)))
@@ -29,6 +29,6 @@
                     (let ((out (open-output-file vol-file)))
                       (write-bytes byte-str out)
                       (close-output-port out)))
-                  (eprintf "Cannot delete ~a." del-file)))
-            (eprintf "Container file ~a not found." vol-file)))
+                  (eprintf "Cannot delete ~a.\n" del-file)))
+            (eprintf "Container file ~a not found.\n" vol-file)))
       (display-usage)))
