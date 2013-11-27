@@ -1,8 +1,9 @@
 #lang racket
 
 ; todo: lock container file, do we need a rename?
-;       debugging tool: serialise volume content so as to allow easy comparison
-;                       between volumes
+;       fix incredibly inefficient text file conversions
+
+; fixme: looks like text file lines are not allowed to span blocks...
 
 (require racket/date)
 
@@ -17,6 +18,8 @@
 (define volume-header-blocks 2)
 (define text-file-header-blocks 2)
 (define max-vol-blocks 32767)
+(define max-filename-len 15)
+(define max-volname-len 7)
 ; The DLE character is used for indentation in P-System text files.
 ; For our purposes, it stands for "Drag Line East" :-)
 (define dle 16)
@@ -179,10 +182,12 @@
       (let ((file-modified (file-or-directory-modify-seconds container-file)))
         (lambda (op)
           (cond ((not (file-exists? container-file))
-                 (raise-user-error "File ~a has been removed!" container-file))
+                 (raise-user-error (format "File ~a has been removed!"
+                                           container-file)))
                 ((not (= (file-or-directory-modify-seconds container-file)
                          file-modified))
-                 (raise-user-error "File ~a has been modified." container-file))
+                 (raise-user-error (format "File ~a has been modified."
+                                           container-file)))
                 ((eq? op 'open-input)
                  (open-input-file container-file #:mode 'binary))
                 ((eq? op 'file-info)
@@ -316,7 +321,7 @@
                 (string=? (car arg) (vi-volume-name vol-info))
                 (or (and (last? arg) (zero? (vi-number-of-files vol-info)))
                     (ormap (lambda (f) (apply f op (cdr arg))) dir))))
-          ((eq? op 'read)
+          ((or (eq? op 'read) (eq? op 'dump))
            (if (and (> (length arg) 1)
                     (string=? (car arg) (vi-volume-name vol-info)))
                ; using ormap we get the converted text or #f
@@ -376,8 +381,8 @@
                                  (fi-file-name file-info)
                                  last-bytes
                                  (current-date)))))
-             (else (raise-user-error "Unable to write to file kind ~a."
-                                     (fi-file-kind file-info))))
+             (else (raise-user-error (format "Unable to write to file kind ~a."
+                                             (fi-file-kind file-info)))))
            ; it's not this file, just produce a bin-image of it
            (let ((in-port (container-file 'open-input)))
              (begin0
@@ -397,10 +402,19 @@
                  (begin0
                    (file->text in-port block-offset file-info)
                    (close-input-port in-port)))
-               (raise-user-error "Unable to read file kind ~a."
-                                 (fi-file-kind file-info)))
+               (raise-user-error (format "Unable to read file kind ~a."
+                                         (fi-file-kind file-info))))
            #f))
       ((eq? op 'file-info) file-info)
+      ((eq? op 'dump)
+       (if (and (last? arg) (string=? (car arg) (fi-file-name file-info)))
+           (let ((in-port (container-file 'open-input)))
+             (begin0
+               (if (eq? (fi-file-kind file-info) 'Text)
+                   (file->text in-port block-offset file-info)
+                   (file->hd in-port block-offset file-info))
+               (close-input-port in-port)))
+           #f))
       (else #f))))
 
 ; place holder for new file system objects
@@ -415,39 +429,36 @@
           ((eq? op 'file-info) (make-fi 0 0 'Spare "" 0 0))
           ((eq? op 'create-file)
            (if (= (length arg) 2)
-             (let ((new-image (text->file (cadr arg))))
-               (values (bytes-append new-image
-                                     (make-bytes (- block-size
-                                                    (bytes-last-block (bytes-length new-image)))
-                                                 0))
-                       (make-fi 0
-                                (byte-blocks (bytes-length new-image))
-                                'Text
-                                (car arg) ; fixme: too long a filename will just get truncated
-                                (bytes-last-block (bytes-length new-image))
-                                (current-date))))
+             (if (<= (string-length (car arg)) max-filename-len)
+                 (let ((new-image (text->file (cadr arg))))
+                   (values (bytes-append new-image
+                                         (make-bytes (- block-size
+                                                        (bytes-last-block (bytes-length new-image)))
+                                                     0))
+                           (make-fi 0
+                                    (byte-blocks (bytes-length new-image))
+                                    'Text
+                                    (car arg)
+                                    (bytes-last-block (bytes-length new-image))
+                                    (current-date))))
+                 (raise-user-error (format "Filename ~a is too long." (car arg))))
              (values #f #f)))
           ((eq? op 'create-vol)
            (if (last? arg)
-               (values (bytes-append
-                        (make-bytes (block-bytes volume-header-blocks) 0)
-                        (vi->bytes (make-vi 0
-                                            6
-                                            0
-                                            (car arg)  ; fixme: too
-                                            6
-                                            0
-                                            0
-                                            0))
-                        (make-bytes (- (block-bytes (- 6 volume-header-blocks))
-                                       dir-entry-size)
-                                    0))
-                       (make-fi 0
-                                6
-                                'Svol
-                                (string-append (car arg) ".SVOL")
-                                block-size
-                                (current-date)))
+               (if (<= (string-length (car arg)) max-volname-len)
+                   (values (bytes-append
+                            (make-bytes (block-bytes volume-header-blocks) 0)
+                            (vi->bytes (make-vi 0 6 0 (car arg) 6 0 0 0))
+                            (make-bytes (- (block-bytes (- 6 volume-header-blocks))
+                                           dir-entry-size)
+                                        0))
+                           (make-fi 0
+                                    6
+                                    'Svol
+                                    (string-append (car arg) ".SVOL")
+                                    block-size
+                                    (current-date)))
+                   (raise-user-error (format "Volume name ~a is too long." (car arg))))
                (values #f #f)))
           (else #f))))
 
@@ -500,6 +511,8 @@
                                 (max (vi-eov-block vol-info) eov-for-image))))
         (when (> new-eov-block max-vol-blocks)
           (raise-user-error "Volume too big"))
+        ; fixme: we need to ensure the file count does not exceed the space
+        ;        reserved for dir entries
         (bytes-append (make-bytes (block-bytes volume-header-blocks) 0)
                       (vi->bytes (make-vi (vi-first-block vol-info)
                                           (vi-last-block vol-info)
@@ -576,7 +589,30 @@
                                        #f
                                        (bytes-append text
                                                      (bytes pos-byte))))))))))
- 
+
+(define (file->hd in-port block-offset file-info)
+  (define (integer->formatted-hex n width)  
+    (define (prepend-zeroes hex-str)
+      (let ((len (string-length hex-str)))
+        (if (>= len width)
+            hex-str
+            (string-append (make-string (- width len) #\0) hex-str))))
+    (prepend-zeroes (format "~x" n)))
+  (define (format-line address b)
+    (apply string-append
+           (format "~a : " (integer->formatted-hex address 6))
+           (append (map (lambda (x) (format "~a " (integer->formatted-hex x 2))) b)
+                   (list "\n"))))
+  (file-position in-port (block-bytes (+ block-offset
+                                         (fi-first-block file-info))))
+  (let loop ((address 0) (hd ""))
+    (if (< address (block-bytes (fi-blocks-used file-info)))
+        (loop (+ address 16)
+              (string-append hd
+                             (format-line address
+                                          (bytes->list (read-bytes 16 in-port)))))
+        hd
+)))
     
 ; we use current-input-port & eof-object? eventually...
 (define (text->file byte-str)
