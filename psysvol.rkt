@@ -614,43 +614,98 @@
         hd
 )))
     
-; we use current-input-port & eof-object? eventually...
 (define (text->file byte-str)
-  (define (number-of-spaces pos)
-    (if (and (< pos (bytes-length byte-str)) (= (bytes-ref byte-str pos) space))
+  (define text-block-size 1024)
+  (let ((byte-len (bytes-length byte-str)))
+    (define (crlf? pos)
+      (and (< pos (- byte-len 1))
+           (>= pos 0)
+           (= (bytes-ref byte-str pos) cr)
+           (= (bytes-ref byte-str (+ pos 1)) lf)))
+    (define (eol pos)
+      (cond ((= pos (- byte-len 1)) pos)
+            ((crlf? pos) (+ pos 1))
+            ((= (bytes-ref byte-str pos) cr) pos)
+            ((= (bytes-ref byte-str pos) lf) pos)
+            (else (eol (+ pos 1)))))
+    (define (number-of-spaces pos)
+      (if (and (< pos byte-len) (= (bytes-ref byte-str pos) space))
         (+ 1 (number-of-spaces (+ pos 1)))
         0))
-  (define (crlf? pos)
-    (and (< pos (- (bytes-length byte-str) 1))
-         (= (bytes-ref byte-str pos) cr)
-         (= (bytes-ref byte-str (+ pos 1)) lf)))
-  (let convert-bytes ((pos 0) (start-of-line #t) (file-text #""))
-    (if (= pos (bytes-length byte-str))
-        (bytes-append (make-bytes (block-bytes text-file-header-blocks) 0)
-                      file-text 
-                      (bytes 0))
-        (let ((pos-byte (bytes-ref byte-str pos)))
-          (cond (start-of-line
-                 (let ((indent (min (number-of-spaces pos) 223)))
-                   (if (> indent 2)
-                       (convert-bytes (+ pos indent)
-                                      #f
-                                      (bytes-append file-text
-                                                    (bytes dle (+ space 
-                                                                  indent))))
-                       (convert-bytes pos #f file-text))))
-                ((crlf? pos)
-                 (convert-bytes (+ pos 2)
-                                #t
-                                (bytes-append file-text (bytes cr))))
-                ((or (= pos-byte cr) (= pos-byte lf))
-                 (convert-bytes (+ pos 1)
-                                #t
-                                (bytes-append file-text (bytes cr))))
-                (else (convert-bytes (+ pos 1)
-                                     #f
-                                     (bytes-append file-text
-                                                   (bytes pos-byte)))))))))
+    (define (take-line pos)
+      (let ((end-pos (eol pos))
+            (indent  (min (number-of-spaces pos) 223)))
+        (values (bytes-append (if (> indent 2)
+                                  (bytes dle (+ indent space))
+                                  (make-bytes indent space))
+                              (subbytes byte-str
+                                        (+ pos indent)
+                                        (if (crlf? (- pos 1))
+                                            (- end-pos 1)
+                                            end-pos))
+                              (bytes cr))
+                (+ end-pos 1))))
+    (define (append-line body line)
+      (let ((block-bytes-remaining (- text-block-size
+                                      (remainder (bytes-length body) 
+                                                 text-block-size)))
+            (line-length (bytes-length line)))
+        (cond ((>= line-length text-block-size) ; all bets are off, split line
+               (append-line (bytes-append body 
+                                          (make-bytes block-bytes-remaining 0)
+                                          (subbytes line 0 (- text-block-size 2))
+                                          (bytes cr 0))
+                            (subbytes line (- text-block-size 2))))
+              ((> line-length (- block-bytes-remaining 1))
+               (bytes-append body (make-bytes block-bytes-remaining 0) line))
+              (else (bytes-append body line)))))
+    (let convert-bytes ((pos 0) (file-text #""))
+      (if (< pos byte-len)
+          (let-values (((line-bytes next-pos) (take-line pos)))
+            (convert-bytes next-pos (append-line file-text line-bytes)))
+          (bytes-append (make-bytes (block-bytes text-file-header-blocks) 0)
+                        file-text
+                        (bytes 0))))))
+
+
+
+; we use current-input-port & eof-object? eventually...
+;(define (text->file byte-str)
+;  (define (number-of-spaces pos)
+;    (if (and (< pos (bytes-length byte-str)) (= (bytes-ref byte-str pos) space))
+;        (+ 1 (number-of-spaces (+ pos 1)))
+;        0))
+;  (define (crlf? pos)
+;    (and (< pos (- (bytes-length byte-str) 1))
+;         (= (bytes-ref byte-str pos) cr)
+;         (= (bytes-ref byte-str (+ pos 1)) lf)))
+;  (let convert-bytes ((pos 0) (start-of-line #t) (file-text #""))
+;    (if (= pos (bytes-length byte-str))
+;        (bytes-append (make-bytes (block-bytes text-file-header-blocks) 0)
+;                      file-text 
+;                      (bytes 0))
+;        (let ((pos-byte (bytes-ref byte-str pos)))
+;          (cond (start-of-line
+;                 (let ((indent (min (number-of-spaces pos) 223)))
+;                   (if (> indent 2)
+;                       (convert-bytes (+ pos indent)
+;                                      #f
+;                                      (bytes-append file-text
+;                                                    (bytes dle (+ space 
+;                                                                  indent))))
+;                       (convert-bytes pos #f file-text))))
+;                ((crlf? pos)
+;                 (convert-bytes (+ pos 2)
+;                                #t
+;                                (bytes-append file-text (bytes cr))))
+;                ((or (= pos-byte cr) (= pos-byte lf))
+;                 (convert-bytes (+ pos 1)
+;                                #t
+;                                (bytes-append file-text (bytes cr))))
+;                (else (convert-bytes (+ pos 1)
+;                                     #f
+;                                     (bytes-append file-text
+;                                                   (bytes pos-byte)))))))))
 
 
 
