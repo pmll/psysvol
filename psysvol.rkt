@@ -1,9 +1,8 @@
 #lang racket
 
 ; todo: lock container file, do we need a rename?
-;       fix incredibly inefficient text file conversions
 
-; fixme: looks like text file lines are not allowed to span blocks...
+; fixme: does a text file need to occupy an even number of blocks?
 
 (require racket/date)
 
@@ -92,8 +91,8 @@
          (hours     (- (bitwise-bit-field time-b 4 9) 1))
          (has-time? (and (< minutes 60) (> hours -1) (< hours 24))))
     (with-handlers
-      ((exn:fail:contract? (lambda (e) ((raise-user-error "Bad date bytes")))))
-      ;((exn:fail:contract? (lambda (e) ((current-date)))))
+      ((exn:fail:contract? (lambda (e) (raise-user-error "Bad date bytes"))))
+      ;((exn:fail:contract? (lambda (e) (current-date))))
       (make-date 0
                  ; the time part is pretty non-standard, I think
                  ; where it appears not to be used, treat as midnight
@@ -490,7 +489,8 @@
                (<= (fi-last-byte file-info) block-size)))))
   (and (zero? (vi-first-block vol-info)) 
        (> (vi-last-block vol-info) volume-header-blocks)
-       (<= (+ (byte-blocks (* (vi-number-of-files vol-info) dir-entry-size))
+       (<= (+ (byte-blocks (* (+ (vi-number-of-files vol-info) 1) 
+                              dir-entry-size))
               volume-header-blocks)
            (vi-last-block vol-info))
        (andmap valid-dir-entry? dir)
@@ -511,8 +511,10 @@
                                 (max (vi-eov-block vol-info) eov-for-image))))
         (when (> new-eov-block max-vol-blocks)
           (raise-user-error "Volume too big"))
-        ; fixme: we need to ensure the file count does not exceed the space
-        ;        reserved for dir entries
+        (when (> (+ (byte-blocks (* (+ cnt 1) dir-entry-size))
+                    volume-header-blocks)
+                 (vi-last-block vol-info))
+          (raise-user-error "Too many files in volume"))
         (bytes-append (make-bytes (block-bytes volume-header-blocks) 0)
                       (vi->bytes (make-vi (vi-first-block vol-info)
                                           (vi-last-block vol-info)
@@ -557,9 +559,8 @@
   (file-position in-port (block-bytes start-block))
   (read-bytes (block-bytes (fi-blocks-used file-info))
               in-port))
-             
+
 (define (file->text in-port block-offset file-info)
-  (define (dle-indent n) (make-bytes (- n space) space))
   (file-position in-port (block-bytes (+ block-offset
                                          (fi-first-block file-info)
                                          text-file-header-blocks)))
@@ -567,28 +568,38 @@
                                          text-file-header-blocks
                                          1))
                          (fi-last-byte file-info)))
-         (file-bytes (read-bytes file-length in-port)))
-    (let convert-bytes ((pos 0) (start-of-line #t) (text #""))
-      (if (= pos file-length)
+         ; nested regexp-replace* seems to work better than regexp-replaces
+         (file-bytes (regexp-replace* (byte-regexp #"\r") 
+                                      (regexp-replace* (byte-regexp #"\0")
+                                                       (read-bytes file-length
+                                                                   in-port)
+                                                       #"")
+                                      #"\n"))
+         (fb-len (bytes-length file-bytes)))
+    (define (eol pos)
+      (cond ((= pos (- fb-len 1)) pos)
+            ((= (bytes-ref file-bytes pos) lf) pos)
+            (else (eol (+ pos 1)))))
+    (define (line-start pos end)
+      (if (zero? (- end pos))
+          (bytes (bytes-ref file-bytes pos))
+          (let ((b1 (bytes-ref file-bytes pos))
+                (b2 (bytes-ref file-bytes (+ pos 1))))
+            (if (= b1 dle)
+                (make-bytes (- b2 space) space)
+                (bytes b1 b2)))))
+    (define (line-end pos end)
+      (if (> (+ pos 2) end)
+          #""
+          (subbytes file-bytes (+ pos 2) (+ end 1))))
+    (let convert-bytes ((pos 0) (text #""))
+      (if (= pos fb-len)
           text
-          (let ((pos-byte (bytes-ref file-bytes pos)))
-            (cond ((zero? pos-byte) (convert-bytes (+ pos 1) 
-                                                   start-of-line 
-                                                   text))
-                  ((= pos-byte cr) (convert-bytes (+ pos 1)
-                                                  #t
-                                                  (bytes-append text #"\n")))
-                  ((and (= pos-byte dle) start-of-line)
-                   (convert-bytes (+ pos 2)
-                                  #f
-                                  (bytes-append text 
-                                                (dle-indent
-                                                  (bytes-ref file-bytes
-                                                             (+ pos 1))))))
-                  (else (convert-bytes (+ pos 1)
-                                       #f
-                                       (bytes-append text
-                                                     (bytes pos-byte))))))))))
+          (let ((end-pos (eol pos)))
+            (convert-bytes (+ end-pos 1)
+                           (bytes-append text
+                                         (line-start pos end-pos)
+                                         (line-end pos end-pos))))))))
 
 (define (file->hd in-port block-offset file-info)
   (define (integer->formatted-hex n width)  
@@ -601,7 +612,8 @@
   (define (format-line address b)
     (apply string-append
            (format "~a : " (integer->formatted-hex address 6))
-           (append (map (lambda (x) (format "~a " (integer->formatted-hex x 2))) b)
+           (append (map (lambda (x) (format "~a " (integer->formatted-hex x 2)))
+                        b)
                    (list "\n"))))
   (file-position in-port (block-bytes (+ block-offset
                                          (fi-first-block file-info))))
@@ -610,9 +622,9 @@
         (loop (+ address 16)
               (string-append hd
                              (format-line address
-                                          (bytes->list (read-bytes 16 in-port)))))
-        hd
-)))
+                                          (bytes->list (read-bytes 16 
+                                                                   in-port)))))
+        hd)))
     
 (define (text->file byte-str)
   (define text-block-size 1024)
@@ -630,8 +642,8 @@
             (else (eol (+ pos 1)))))
     (define (number-of-spaces pos)
       (if (and (< pos byte-len) (= (bytes-ref byte-str pos) space))
-        (+ 1 (number-of-spaces (+ pos 1)))
-        0))
+          (+ 1 (number-of-spaces (+ pos 1)))
+          0))
     (define (take-line pos)
       (let ((end-pos (eol pos))
             (indent  (min (number-of-spaces pos) 223)))
@@ -640,7 +652,7 @@
                                   (make-bytes indent space))
                               (subbytes byte-str
                                         (+ pos indent)
-                                        (if (crlf? (- pos 1))
+                                        (if (crlf? (- end-pos 1))
                                             (- end-pos 1)
                                             end-pos))
                               (bytes cr))
