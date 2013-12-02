@@ -629,13 +629,13 @@
                                           (bytes->list (read-bytes 16 
                                                                    in-port)))))
         hd)))
-    
+
 (define (text->file byte-str)
   (define text-block-size 1024)
   (define (number-of-spaces bstr pos)
-    (if (or (>= pos (bytes-length bstr)) (not (= (bytes-ref bstr pos) space)))
-        pos
-        (number-of-spaces bstr (+ pos 1))))
+    (if (and (< pos (bytes-length bstr)) (= (bytes-ref bstr pos) space))
+        (number-of-spaces bstr (+ pos 1))
+        pos))
   (define (convert-line line)
     (let ((indent (min (number-of-spaces line 0) 223)))
       (bytes-append (if (> indent 2)
