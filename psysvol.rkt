@@ -96,7 +96,6 @@
          (has-time? (and (< minutes 60) (> hours -1) (< hours 24))))
     (with-handlers
       ((exn:fail:contract? (lambda (e) (raise-user-error "Bad date bytes"))))
-      ;((exn:fail:contract? (lambda (e) (current-date))))
       (make-date 0
                  ; the time part is pretty non-standard, I think
                  ; where it appears not to be used, treat as midnight
@@ -184,16 +183,15 @@
          (bstr (regexp-replace* (byte-regexp #"\0") byte-str #""))
          (last-byte (- (bytes-length bstr) 1)))
     (define (get-line eol-pos)
-      (cond ((= eol-pos last-byte)
-             (values (subbytes bstr pos (+ eol-pos 1)) (+ eol-pos 1)))
-            ; crlf
-            ((and (< eol-pos last-byte)
+      (cond ((and (< eol-pos last-byte)
                   (= (bytes-ref bstr eol-pos) cr)
                   (= (bytes-ref bstr (+ eol-pos 1)) lf))
              (values (subbytes bstr pos eol-pos) (+ eol-pos 2)))
             ((or (= (bytes-ref bstr eol-pos) lf)
                  (= (bytes-ref bstr eol-pos) cr))
              (values (subbytes bstr pos eol-pos) (+ eol-pos 1)))
+            ((= eol-pos last-byte)
+             (values (subbytes bstr pos) (+ eol-pos 1)))
             (else (get-line (+ eol-pos 1)))))
     (lambda ()
       (if (<= pos last-byte)
@@ -529,53 +527,51 @@
 (define (vol->bytes vol-info dir op . arg)
   (define (vol-iter dir block-offset dir-bytes vol-bytes cnt)
     (if (null? dir)
-      (let* ((eov-for-image (+ (vi-last-block vol-info)
-                               (byte-blocks (bytes-length vol-bytes))))
-             (new-eov-block (if (eq? op 'crunch)
-                                eov-for-image
-                                (max (vi-eov-block vol-info) eov-for-image))))
-        (when (> new-eov-block max-vol-blocks)
-          (raise-user-error "Volume too big"))
-        (when (> (+ (byte-blocks (* (+ cnt 1) dir-entry-size))
-                    volume-header-blocks)
-                 (vi-last-block vol-info))
-          (raise-user-error "Too many files in volume"))
-        (bytes-append (zero-bytes (block-bytes volume-header-blocks))
-                      (vi->bytes (make-vi (vi-first-block vol-info)
-                                          (vi-last-block vol-info)
-                                          (vi-file-kind vol-info)
-                                          (vi-volume-name vol-info)
-                                          new-eov-block
-                                          cnt
-                                          (vi-load-time vol-info)
-                                          (vi-last-boot vol-info)))
-                      dir-bytes
-                      ; max shouldn't be needed here?
-                      (zero-bytes (max (- (block-bytes (vi-last-block vol-info))
-                                          (block-bytes volume-header-blocks)
-                                          (bytes-length dir-bytes)
-                                          dir-entry-size)
-                                       0))
-                      vol-bytes
-                      (zero-bytes (- (block-bytes new-eov-block)
-                                     (bytes-length vol-bytes)
-                                     (block-bytes (vi-last-block vol-info))))))
-      (let-values (((this-image this-fi) (apply (car dir) op arg)))
-        (if this-image
-          (let ((new-block-offset (+ block-offset (fi-blocks-used this-fi))))
-            (vol-iter (cdr dir)
-                      new-block-offset
-                      (bytes-append dir-bytes
-                                    (fi->bytes
-                                      (make-fi block-offset
-                                               new-block-offset
-                                               (fi-file-kind this-fi)
-                                               (fi-file-name this-fi)
-                                               (fi-last-byte this-fi)
-                                               (fi-last-access this-fi))))
-                      (bytes-append vol-bytes this-image)
-                      (+ cnt 1)))
-          (vol-iter (cdr dir) block-offset dir-bytes vol-bytes cnt)))))
+        (let* ((eov-for-image (+ (vi-last-block vol-info)
+                                 (byte-blocks (bytes-length vol-bytes))))
+               (new-eov-block (if (eq? op 'crunch)
+                                  eov-for-image
+                                  (max (vi-eov-block vol-info) eov-for-image))))
+          (when (> new-eov-block max-vol-blocks)
+            (raise-user-error "Volume too big"))
+          (when (> (+ (byte-blocks (* (+ cnt 1) dir-entry-size))
+                      volume-header-blocks)
+                   (vi-last-block vol-info))
+            (raise-user-error "Too many files in volume"))
+          (bytes-append (zero-bytes (block-bytes volume-header-blocks))
+                        (vi->bytes (make-vi (vi-first-block vol-info)
+                                            (vi-last-block vol-info)
+                                            (vi-file-kind vol-info)
+                                            (vi-volume-name vol-info)
+                                            new-eov-block
+                                            cnt
+                                            (vi-load-time vol-info)
+                                            (vi-last-boot vol-info)))
+                        dir-bytes
+                        (zero-bytes (- (block-bytes (vi-last-block vol-info))
+                                       (block-bytes volume-header-blocks)
+                                       (bytes-length dir-bytes)
+                                       dir-entry-size))
+                        vol-bytes
+                        (zero-bytes (- (block-bytes new-eov-block)
+                                       (bytes-length vol-bytes)
+                                       (block-bytes (vi-last-block vol-info))))))
+        (let-values (((obj-image obj-fi) (apply (car dir) op arg)))
+          (if obj-image
+              (let ((new-block-offset (+ block-offset (fi-blocks-used obj-fi))))
+                (vol-iter (cdr dir)
+                          new-block-offset
+                          (bytes-append dir-bytes
+                                        (fi->bytes
+                                          (make-fi block-offset
+                                                   new-block-offset
+                                                   (fi-file-kind obj-fi)
+                                                   (fi-file-name obj-fi)
+                                                   (fi-last-byte obj-fi)
+                                                   (fi-last-access obj-fi))))
+                          (bytes-append vol-bytes obj-image)
+                          (+ cnt 1)))
+              (vol-iter (cdr dir) block-offset dir-bytes vol-bytes cnt)))))
   (vol-iter dir (vi-last-block vol-info) #"" #"" 0))
  
 (define (file->bytes in-port start-block file-info)
@@ -608,10 +604,8 @@
 (define (file->hd in-port block-offset file-info)
   (define (integer->formatted-hex n width)  
     (define (prepend-zeroes hex-str)
-      (let ((len (string-length hex-str)))
-        (if (>= len width)
-            hex-str
-            (string-append (make-string (- width len) #\0) hex-str))))
+      (string-append (make-string (max (- width (string-length hex-str)) 0) #\0)
+                     hex-str))
     (prepend-zeroes (format "~x" n)))
   (define (format-line address b)
     (apply string-append
