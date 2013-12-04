@@ -1,0 +1,8 @@
+# vim files
+*.rkt~
+# windows executables
+*.exe
+# test volumes
+*.vol
+*.VOL
+*.bak*

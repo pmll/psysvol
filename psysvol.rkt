@@ -1,8 +1,6 @@
 #lang racket
 
-; todo: lock container file, do we need a rename?
-
-; fixme: does a text file need to occupy an even number of blocks?
+; P-System volume utility
 
 (require racket/date)
 
@@ -12,7 +10,9 @@
                                                #:rest (listof any/c) any/c))))
          (struct-out fi))
 
+(define write-text-files-in-whole-text-blocks? #t)
 (define block-size 512)
+(define text-block-size 1024)
 (define dir-entry-size 26)
 (define volume-header-blocks 2)
 (define text-file-header-blocks 2)
@@ -57,6 +57,11 @@
 
 (define (raise-corruption-exception)
   (raise-user-error "Container file is corrupt or not a P-System volume.")) 
+
+; what is the correct mathematical term for this?
+(define (shortfall dividend divisor)
+  (let ((rem (remainder dividend divisor)))
+    (if (zero? rem) 0 (- divisor rem))))
 
 (define (int16->bytes i) (bytes (remainder i 256) (quotient i 256)))
 
@@ -281,19 +286,6 @@
                              (map (lambda (f) (f 'inner-used)) dir)))
                    (ormap (lambda (f) (apply f op (cdr arg))) dir))
                #f))
-          ((eq? op 'bin-image)
-           ; bin-image is just proof of concept, it won't be staying...
-           (let ((vol-image (vol->bytes vol-info dir 'bin-image)))
-             (if (eq? (fi-file-kind file-info) 'Vol)
-                 vol-image
-                 (values vol-image
-                         (make-fi (fi-first-block file-info)
-                                  (+ (byte-blocks (bytes-length vol-image))
-                                     (fi-first-block file-info))
-                                  (fi-file-kind file-info)
-                                  (fi-file-name file-info)
-                                  (fi-last-byte file-info)
-                                  (fi-last-access file-info))))))
           ((eq? op 'crunch)
            (let ((vol-image (vol->bytes vol-info dir op)))
              (if (eq? (fi-file-kind file-info) 'Vol)
@@ -371,14 +363,6 @@
       ; provide a consistant interface for volume and file objects
       ((eq? op 'outer-used) (fi-blocks-used file-info))
       ((eq? op 'inner-used) (fi-blocks-used file-info))
-      ((eq? op 'bin-image)
-       (let ((in-port (container-file 'open-input)))
-         (begin0
-           (values (file->bytes in-port
-                                (+ block-offset (fi-first-block file-info))
-                                file-info)
-                   file-info)
-           (close-input-port in-port))))
       ((eq? op 'crunch)
        (let ((in-port (container-file 'open-input)))
          (begin0
@@ -397,7 +381,8 @@
                      (image-length (bytes-length new-image))
                      (last-bytes (bytes-last-block image-length)))
                 (values (bytes-append new-image
-                                      (zero-bytes (- block-size last-bytes)))
+                                      (zero-bytes (shortfall image-length
+                                                             block-size)))
                         (make-fi (fi-first-block file-info)
                                  (+ (byte-blocks image-length)
                                     (fi-first-block file-info))
@@ -407,7 +392,7 @@
                                  (current-date)))))
              (else (raise-user-error (format "Unable to write to file kind ~a."
                                              (fi-file-kind file-info)))))
-           ; it's not this file, just produce a bin-image of it
+           ; it's not this file, just produce a bin image of it
            (let ((in-port (container-file 'open-input)))
              (begin0
                (values (file->bytes in-port
@@ -457,8 +442,8 @@
                    (let* ((new-image (text->file (cadr arg)))
                           (image-len (bytes-length new-image)))
                      (values (bytes-append new-image
-                                           (zero-bytes (- block-size
-                                                          (bytes-last-block image-len))))
+                                           (zero-bytes (shortfall image-len
+                                                                  block-size)))
                              (make-fi 0
                                       (byte-blocks image-len)
                                       'Text
@@ -626,7 +611,6 @@
         hd)))
 
 (define (text->file byte-str)
-  (define text-block-size 1024)
   (define (number-of-spaces bstr pos)
     (if (and (< pos (bytes-length bstr)) (= (bytes-ref bstr pos) space))
         (number-of-spaces bstr (+ pos 1))
@@ -658,16 +642,16 @@
         (if tl
             (convert (append-line file-text (convert-line tl)))
             (bytes-append (zero-bytes (block-bytes text-file-header-blocks))
-                          file-text))))))
-
- 
-
-
+                          file-text
+                          (if write-text-files-in-whole-text-blocks?
+                              (zero-bytes (shortfall (bytes-length file-text)
+                                                     text-block-size))
+                              #"")))))))
 
 
 ; structure of listing return :
 
-; '(file-info-object-for-vol (... list for things contained in vol ...))
+; vol '(file-info-object-for-vol (... list for things contained in vol ...))
 ; file '(file-info ())
 ; svol '(file-info (... list for things contained in vol ...))
 
