@@ -453,19 +453,20 @@
           ((eq? op 'file-info) (make-fi 0 0 'Spare "" 0 0))
           ((eq? op 'create-file)
            (if (= (length arg) 2)
-             (if (<= (string-length (car arg)) max-filename-len)
-                 (let ((new-image (text->file (cadr arg))))
-                   (values (bytes-append new-image
-                                         (zero-bytes (- block-size
-                                                        (bytes-last-block (bytes-length new-image)))))
-                           (make-fi 0
-                                    (byte-blocks (bytes-length new-image))
-                                    'Text
-                                    (car arg)
-                                    (bytes-last-block (bytes-length new-image))
-                                    (current-date))))
-                 (raise-user-error (format "Filename ~a is too long." (car arg))))
-             (values #f #f)))
+               (if (<= (string-length (car arg)) max-filename-len)
+                   (let* ((new-image (text->file (cadr arg)))
+                          (image-len (bytes-length new-image)))
+                     (values (bytes-append new-image
+                                           (zero-bytes (- block-size
+                                                          (bytes-last-block image-len))))
+                             (make-fi 0
+                                      (byte-blocks image-len)
+                                      'Text
+                                      (car arg)
+                                      (bytes-last-block image-len)
+                                      (current-date))))
+                   (raise-user-error (format "Filename ~a is too long." (car arg))))
+               (values #f #f)))
           ((eq? op 'create-vol)
            (if (last? arg)
                (if (<= (string-length (car arg)) max-volname-len)

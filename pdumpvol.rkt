@@ -23,7 +23,6 @@
                   (let ((file-info (car listing)))
                     (display (make-string indent #\>))
                     (display (fi-file-name file-info))
-                    ;(newline) (display listing)
                     (newline)
                     (if (volume-type? (fi-file-kind file-info))
                         (for-each (lambda (x) (disp-vol x 
