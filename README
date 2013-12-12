@@ -1,10 +1,108 @@
-Not much to see here...
+Overview
+========
 
-Just someone trying to get their imperative brain to think functionally and
-create something useful in the process.
+The purpose of this software is to provide a platform independent method to read
+and write text files contained within UCSD p-System volume images, thereby
+making them available to my editor of choice (vim).
 
-The ultimate aim is to be able to provide a platform independent method to 
-edit text files contained within UCSD p-system volume images.
+p-System volumes come in a number of different forms. The ones targetted in
+this case seem to be somewhat unusual - their files have time stamps (where
+other implementations only have date stamps) and sub-volumes are supported (a
+feature which allows a volume to be contained within another volume, like a
+directory tree structure).
 
-I won't lie, the quality of the code is terrible at the moment.
-I wouldn't read it, really.
+Reasons not to use this Software
+--------------------------------
+This implementation is limited inasmuch as it only works for the format of
+p-System volume that I have encountered. It has callous disregard for any
+metadata that might be contained in your volume and text file headers. There
+are unsolved race conditions that make it unsuitable for shared access to
+volumes.
+
+If all you need is to extract files from a p-System volume, John Foust provides
+a "burst" utility that will do this, see http://www.threedee.com/jcm/diskutil/.
+It doesn't support sub-volumes directly, but in theory, it should be possible to
+"re-burst" any resulting sub-volumes.
+
+If you are running GNU Linux, FreeBSD or some other O/S that supports FUSE,
+Peter Miller provides a utility that allows p-System volumes to be mounted and
+used as part of the regular filesystem (and what's not to like about that?). See
+http://ucsd-psystem-fs.sourceforge.net. Again, I don't think it supports
+sub-volumes directly but it should be possible to mount them as necessary.
+
+Brief Description of Commands
+=============================
+
+There are a number of command line utilities provided. Where a command accepts a
+p-System path as a parameter, the "/" character should be used as a path
+separator. The root volume should not be specified as this is always implied.
+Path names are case insensitive. Volume file parameters should be specified as
+per the rules of your O/S shell. All update operations create a backup copy of
+the volume file. The most recent will have  a "bak1" extension, with older
+versions having higher numerical suffixes (in the functional tradition, the
+object is not mutated, a new version is created - I'm just not brave enough to
+collect the garbage yet).
+
+plist VOLUME-FILE [P-SYSTEM-FILE-1 P-SYSTEM-FILE-2 ...]
+-----
+In its basic form, this command provides a listing of the entire contents of
+a given p-system volume image. Optionally, it searches for matching file names
+contained in the image. There is no method to enter the path to a file, it
+simply finds all files or sub-volumes whose names match and also displays the
+sub-volumes that contain those matches. The wild card characters "*", "?" and
+"[]" may be used in search patterns. Search patterns are case insensitive.
+
+pread VOLUME-FILE P-SYSTEM-FILE-PATH
+-----
+Read in a given text file (and only a text file) from a p-System volume and
+output it to stdout.
+
+Example - extract a file to the host file system:
+
+pread c:\myvol.vol subvol/myfile.text > c:\myfile.text
+
+pwrite VOLUME-FILE P-SYSTEM-FILE-PATH
+------
+Take text supplied from stdin and create/overwrite the given p-System file with
+it. Containing volumes are expanded as needed.
+
+Example:
+
+type c:\myfile.text | pwrite c:\myvol.vol subvol/myfile.text
+
+prm VOLUME-FILE P-SYSTEM-FILE-PATH
+---
+Remove a p-System file.
+
+prmvol [-f] VOLUME-FILE P-SYSTEM-PATH
+------
+Remove a sub-volume. Use the -f switch to remove a non-empty sub-volume.
+
+pmkvol VOLUME-FILE P-SYSTEM-PATH
+------
+Create a new sub-volume.
+
+pfree [-s] VOLUME-FILE [P-SYSTEM-PATH]
+-----
+Report the number of unused blocks available in the volume or the given
+sub-volume. Use the -s switch to include unused blocks of all contained
+sub-volumes in the total.
+
+pcrunch VOLUME-FILE
+-------
+Remove unused blocks from a given volume. This should typically result in a
+smaller image file.
+
+Installation
+============
+
+To compile this software or run it from source, Racket must first be installed.
+It can be obtained from http://racket-lang.org. Once you have Racket, there are
+numerous ways to run this software. Probably the most straightforward is to use
+"raco exe" to compile each of the required commands. For example:
+
+raco exe plist.rkt
+
+This will produce a plist executable that can be used straight from the
+command line. This executable will be dependent on the installed Racket
+libraries. See the Racket documentation for other options.
