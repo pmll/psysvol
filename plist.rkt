@@ -3,14 +3,11 @@
 ; display listing of given p-system volume image
 
 (require "psysvol.rkt")
+(require "error.rkt")
 
 (define params (vector->list (current-command-line-arguments)))
 
 (define indent-size 2)
-
-(define (display-usage)
-  (eprintf "Usage: ~a vol-file [file-1 file-2 ...]\n"
-           (find-system-path 'run-file)))
 
 ; * becomes .*, ? becomes ., [] stays as is
 ; . becomes \.
@@ -90,23 +87,21 @@
           "")))
   (apply string-append (map file-obj->string file-lst)))
 
-(with-handlers
-  ((exn:fail:user?
-   (lambda (e) (eprintf "~a\n" (exn-message e)))))
-  (if (null? params)
-      (display-usage)
-      (let ((vol-file (car params))
-            (match-lst (cdr params)))      
-        (if (file-exists? vol-file)
-            (let* ((psys-vol (make-psys-vol vol-file))
-                   (listing-str (listing->string (list (psys-vol 'list)) 
-                                                 0 
-                                                 (map (lambda (str)
-                                                        (glob->regexp 
-                                                         (string-upcase str)))
-                                                      match-lst))))
-              (display-heading)
-              (display listing-str)
-              (when (string=? listing-str "")
-                (display "No matching entries found") (newline)))
-            (eprintf "Container File: ~a not found\n" vol-file)))))
+(with-user-error-handled
+  (lambda ()
+    (when (null? params) (display-usage "vol-file [file-1 file-2 ...]"))
+    (let ((vol-file (car params))
+          (match-lst (cdr params)))      
+      (if (file-exists? vol-file)
+          (let* ((psys-vol (make-psys-vol vol-file))
+                 (listing-str (listing->string (list (psys-vol 'list)) 
+                                               0 
+                                               (map (lambda (str)
+                                                      (glob->regexp 
+                                                       (string-upcase str)))
+                                                    match-lst))))
+            (display-heading)
+            (display listing-str)
+            (when (string=? listing-str "")
+              (display "No matching entries found") (newline)))
+          (exit-error "Container File: ~a not found" vol-file)))))

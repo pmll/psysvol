@@ -4,12 +4,9 @@
 ; use -s to total free blocks in sub-volumes too
 
 (require "psysvol.rkt")
+(require "error.rkt")
 
 (define params (vector->list (current-command-line-arguments)))
-
-(define (display-usage)
-  (eprintf "Usage: ~a [-s] vol-file [p-system-sub-volume]\n"
-           (find-system-path 'run-file)))
 
 (define (extract-params)
   (define (set-mode params)
@@ -25,21 +22,20 @@
           (else (values #f #f #f))))
   (set-mode params))
 
-(with-handlers
-  ((exn:fail:user?
-      (lambda (e) (eprintf "~a\n" (exn-message e)))))
-  (let-values (((mode vol-file svol) (extract-params)))
-    (if (and mode vol-file svol)
-        (if (file-exists? vol-file)
-            (let* ((psys-vol (make-psys-vol vol-file))
-                   (free (apply psys-vol 
-                                mode
-                                (psys-vol 'vol-name)
-                                (string-split (string-upcase svol) "/"))))
-              (if free
-                  (printf "~a blocks free (i.e. ~a bytes)\n"
-                          free
-                          (block-bytes free))
-                  (eprintf "P-system subvolume: ~a not found.\n" svol)))
-            (eprintf "Container File: ~a not found.\n" vol-file))
-        (display-usage))))
+(with-user-error-handled
+  (lambda ()
+    (let-values (((mode vol-file svol) (extract-params)))
+      (when (not (and mode vol-file svol))
+        (display-usage "[-s] vol-file [p-system-sub-volume]"))
+      (if (file-exists? vol-file)
+          (let* ((psys-vol (make-psys-vol vol-file))
+                 (free (apply psys-vol 
+                              mode
+                              (psys-vol 'vol-name)
+                              (string-split (string-upcase svol) "/"))))
+            (if free
+                (printf "~a blocks free (i.e. ~a bytes)\n"
+                        free
+                        (block-bytes free))
+                (exit-error "P-system subvolume: ~a not found." svol)))
+          (exit-error "Container File: ~a not found." vol-file)))))
