@@ -1,5 +1,12 @@
 " Psysvol vim utilities
 
+" Note to users of this script:
+" By default, &directory has current directory in the list of locations to
+" place swap files. This should be removed if using this utility to edit
+" p-System files. A suitable entry in your vimrc will take care of this, e.g.:
+" set directory=/tmp
+
+
 let s:psys_separator = '@'
 
 if exists('b:psys_path')
@@ -13,6 +20,14 @@ function! SetPsysPath (psys_path)
         let s:psys_path = a:psys_path
 endfunction
 
+
+" the windows version of vim transforms forward slashes in the p-system
+" part of the filename into backslashes
+function! BSlashToFSlash (str)
+	
+	return substitute(a:str, '\\', '/', 'g')
+
+endfunction
 
 
 function! PReadFile (pfilename, override)
@@ -66,9 +81,14 @@ function! PWriteFile (pfilename, override)
         let pos = match(pfilename, s:psys_separator)
 
         if pos >= 0 
+		" fixme: should we create the '~' style backup file?
+		" it's somewaht moot at the moment as pwrite will take a
+		" backup of the entire volume
+		" fixme: how to stop dos window appearing in windows when
+		" using 'write !' from gvim?
                 let cmd = 'write ! ' . s:psys_path . 'pwrite '
                 let cmd = cmd . strpart(pfilename, 0, pos) . ' '
-                let cmd = cmd . strpart(pfilename, pos + 1)
+                let cmd = cmd . BSlashToFSlash(strpart(pfilename, pos + 1))
                 execute cmd
                 if ! v:shell_error
                         set nomodified
