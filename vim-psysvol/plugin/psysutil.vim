@@ -47,7 +47,6 @@ function! PReadFile (pfilename, override)
                                 execute '1d'
                                 " set the file name
                                 execute 'file ' . a:pfilename
-                                set nomodified
                                 echo 'Successful read from p-System volume'
                         else
                                 " It went wrong, whatever is in the buffer is
@@ -58,8 +57,16 @@ function! PReadFile (pfilename, override)
                                 endwhile
                                 
                         endif
+			set nomodified
                 else
-                        execute 'edit! ' . a:pfilename
+			" normal vim edit
+			try
+                        	execute 'edit! ' . a:pfilename
+			catch /^Vim(edit):/
+				echohl ErrorMsg
+				echo substitute(v:exception, "^Vim(edit):", "", "")
+				echohl None
+			endtry
                 endif
         else
                 echohl ErrorMsg
@@ -81,6 +88,7 @@ function! PWriteFile (pfilename, override)
         let pos = match(pfilename, s:psys_separator)
 
         if pos >= 0 
+		" we're writing to a p-system vol
 		" fixme: should we create the '~' style backup file?
 		" it's somewaht moot at the moment as pwrite will take a
 		" backup of the entire volume
@@ -95,14 +103,14 @@ function! PWriteFile (pfilename, override)
                         echo 'Successful write to p-System volume'
                 endif
         else
-                if a:override == '!' || ! &readonly 
-                        execute 'write' . a:override . ' ' . a:pfilename
-                else
-                        " there are more ways a write can fail than this...
+		" normal vim write
+		try
+			execute 'write' . a:override . ' ' . a:pfilename
+		catch /^Vim(write):/
                         echohl ErrorMsg
-                        echo "'readonly' option is set (add ! to override)"
+                        echo substitute(v:exception, "^Vim(write):", "", "")
                         echohl None
-                endif
+		endtry
         endif
 
 endfunction
