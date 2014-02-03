@@ -25,7 +25,18 @@ endfunction
 " part of the filename into backslashes
 function! BSlashToFSlash (str)
 	
-	return substitute(a:str, '\\', '/', 'g')
+        return substitute(a:str, '\\', '/', 'g')
+
+endfunction
+
+
+" clear undo code snippet thanks to Dongmin Kim's github gist
+function! ClearUndo()
+
+        let old_undolevels = &undolevels
+        set undolevels=-1
+        exe "normal a \<Bs>\<Esc>"
+        let &undolevels = old_undolevels
 
 endfunction
 
@@ -47,6 +58,10 @@ function! PReadFile (pfilename, override)
                                 execute '1d'
                                 " set the file name
                                 execute 'file ' . a:pfilename
+                                " clear undo history here. if we don't do this
+                                " all changes will be undo-able to the point
+                                " before the file was read in
+                                call ClearUndo()
                                 echo 'Successful read from p-System volume'
                         else
                                 " It went wrong, whatever is in the buffer is
@@ -57,16 +72,16 @@ function! PReadFile (pfilename, override)
                                 endwhile
                                 
                         endif
-			set nomodified
+                        set nomodified
                 else
-			" normal vim edit
-			try
-                        	execute 'edit! ' . a:pfilename
-			catch /^Vim(edit):/
-				echohl ErrorMsg
-				echo substitute(v:exception, "^Vim(edit):", "", "")
-				echohl None
-			endtry
+                        " normal vim edit
+                        try
+                                execute 'edit! ' . a:pfilename
+                        catch /^Vim(edit):/
+                                echohl ErrorMsg
+                                echo substitute(v:exception, "^Vim(edit):", "", "")
+                                echohl None
+                        endtry
                 endif
         else
                 echohl ErrorMsg
@@ -88,12 +103,12 @@ function! PWriteFile (pfilename, override)
         let pos = match(pfilename, s:psys_separator)
 
         if pos >= 0 
-		" we're writing to a p-system vol
-		" fixme: should we create the '~' style backup file?
-		" it's somewaht moot at the moment as pwrite will take a
-		" backup of the entire volume
-		" fixme: how to stop dos window appearing in windows when
-		" using 'write !' from gvim?
+                " we're writing to a p-system vol
+                " fixme: should we create the '~' style backup file?
+                " it's somewaht moot at the moment as pwrite will take a
+                " backup of the entire volume
+                " fixme: how to stop dos window appearing in windows when
+                " using 'write !' from gvim?
                 let cmd = 'write ! ' . s:psys_path . 'pwrite '
                 let cmd = cmd . strpart(pfilename, 0, pos) . ' '
                 let cmd = cmd . BSlashToFSlash(strpart(pfilename, pos + 1))
@@ -103,14 +118,14 @@ function! PWriteFile (pfilename, override)
                         echo 'Successful write to p-System volume'
                 endif
         else
-		" normal vim write
-		try
-			execute 'write' . a:override . ' ' . a:pfilename
-		catch /^Vim(write):/
+                " normal vim write
+                try
+                        execute 'write' . a:override . ' ' . a:pfilename
+                catch /^Vim(write):/
                         echohl ErrorMsg
                         echo substitute(v:exception, "^Vim(write):", "", "")
                         echohl None
-		endtry
+                endtry
         endif
 
 endfunction
